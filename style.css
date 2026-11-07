@@ -214,6 +214,33 @@ select {
 .progress-fill { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .15s; }
 .progress span { position: absolute; inset: 0; display: grid; place-items: center; font-size: .85rem; font-weight: 700; }
 
+.engines { display: grid; gap: 8px; }
+.engine {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.engine:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.engine input { margin-top: 5px; width: 18px; height: 18px; accent-color: var(--accent); flex: none; }
+.engine small { color: var(--muted); }
+.badge {
+  font-style: normal;
+  font-size: .72rem;
+  font-weight: 700;
+  color: #fff;
+  background: var(--accent);
+  padding: 1px 8px;
+  border-radius: 999px;
+  vertical-align: middle;
+}
+@media (prefers-color-scheme: dark) { .badge { color: #042f2e; } }
+.stage { margin-top: 6px; font-size: .85rem; color: var(--muted); text-align: center; }
+
 /* ---------- النتائج ---------- */
 .track { margin-bottom: 18px; }
 .track-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
@@ -248,6 +275,7 @@ audio { width: 100%; height: 40px; }
 .stat .label { font-size: .8rem; color: var(--muted); }
 .stat .value { font-size: 1.15rem; font-weight: 700; direction: ltr; }
 .stat .value.good { color: var(--accent); }
+.stat .value.method { direction: rtl; font-size: .95rem; }
 
 .app-footer { text-align: center; color: var(--muted); font-size: .85rem; padding: 24px 16px 32px; }
 
@@ -261,10 +289,12 @@ audio { width: 100%; height: 40px; }
   padding: 12px 18px;
   border-radius: 12px;
   max-width: calc(100% - 32px);
-  transition: transform .25s;
+  transition: transform .25s, opacity .25s, visibility .25s;
+  opacity: 0;
+  visibility: hidden;
   z-index: 10;
 }
-.toast.show { transform: translateX(-50%) translateY(0); }
+.toast.show { transform: translateX(-50%) translateY(0); opacity: 1; visibility: visible; }
 .toast.error { background: var(--danger); }
 
 @media (max-width: 480px) {

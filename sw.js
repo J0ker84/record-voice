@@ -1,6 +1,7 @@
 /* Service Worker: يتيح فتح التطبيق بدون إنترنت (الشبكة أولاً ثم الذاكرة المؤقتة) */
-const CACHE = 'sawt-naqi-v1';
-const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'dsp.js', 'dsp-worker.js', 'manifest.json', 'icon.svg'];
+const CACHE = 'sawt-naqi-v2';
+const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'dsp.js', 'dsp-worker.js', 'manifest.json', 'icon.svg',
+  'vendor/rnnoise/rnnoise.js', 'vendor/rnnoise/rnnoise.wasm'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));

@@ -10,7 +10,7 @@
     noiseProfile: $('#noiseProfile'), hum: $('#hum'), optHighpass: $('#optHighpass'),
     optGate: $('#optGate'), optEq: $('#optEq'), optCompress: $('#optCompress'),
     optNormalize: $('#optNormalize'), processBtn: $('#processBtn'),
-    progressWrap: $('#progressWrap'), progressFill: $('#progressFill'), progressText: $('#progressText'),
+    progressWrap: $('#progressWrap'), stageText: $('#stageText'), progressFill: $('#progressFill'), progressText: $('#progressText'),
     origCanvas: $('#origCanvas'), procCanvas: $('#procCanvas'), origAudio: $('#origAudio'),
     procAudio: $('#procAudio'), origMeta: $('#origMeta'), procMeta: $('#procMeta'),
     downloadOrig: $('#downloadOrig'), downloadProc: $('#downloadProc'),
@@ -336,11 +336,38 @@
   // ------------------------------------------------------------------
   els.strength.addEventListener('input', () => { els.strengthOut.textContent = els.strength.value + '%'; });
 
+  const ENGINE_NAMES = {
+    hybrid: 'ذكاء اصطناعي + طيفي',
+    ai: 'ذكاء اصطناعي (RNNoise)',
+    spectral: 'طيفي كلاسيكي',
+    none: 'بدون إزالة ضوضاء',
+  };
+  const STAGE_NAMES = {
+    'load-model': 'تحميل نموذج الذكاء الاصطناعي…',
+    highpass: 'إزالة الهمهمة…',
+    ai: 'الشبكة العصبية تعزل الكلام عن الضوضاء…',
+    denoise: 'التنقية الطيفية…',
+    gate: 'كتم فترات الصمت…',
+    eq: 'تحسين الوضوح…',
+    compress: 'ضبط المستوى…',
+    done: 'اكتمل',
+  };
+
+  const engineRadios = document.querySelectorAll('input[name="engine"]');
+  const selectedEngine = () => (document.querySelector('input[name="engine"]:checked') || {}).value || 'hybrid';
+  function syncEngineUI() {
+    // بصمة الضوضاء اليدوية تخص الطريقة الطيفية فقط
+    $('#noiseProfileField').hidden = selectedEngine() !== 'spectral';
+  }
+  engineRadios.forEach((r) => r.addEventListener('change', syncEngineUI));
+  syncEngineUI();
+
   function readOptions() {
     const s = Number(els.strength.value) / 100;
     return {
       denoise: s > 0,
       strength: s,
+      engine: selectedEngine(),
       noiseProfile: els.noiseProfile.value,
       noiseSeconds: 1,
       hum: Number(els.hum.value),
@@ -352,10 +379,14 @@
     };
   }
 
-  function setProgress(p) {
+  function setProgress(p, stage) {
     const pct = Math.round(p * 100);
     els.progressFill.style.width = pct + '%';
     els.progressText.textContent = pct + '%';
+    if (stage && STAGE_NAMES[stage]) {
+      els.stageText.textContent = STAGE_NAMES[stage];
+      els.stageText.hidden = false;
+    }
   }
 
   let worker = null;
@@ -379,7 +410,8 @@
     return new Promise((resolve, reject) => {
       w.onmessage = (e) => {
         const m = e.data;
-        if (m.type === 'progress') setProgress(m.value);
+        if (m.type === 'progress') setProgress(m.value, m.stage);
+        else if (m.type === 'warn') toast(m.message, true);
         else if (m.type === 'done') resolve({ samples: m.samples, stats: m.stats });
         else if (m.type === 'error') reject(new Error(m.message));
       };
@@ -396,6 +428,7 @@
     els.processBtn.textContent = '⏳ جارٍ التنقية…';
     els.progressWrap.hidden = false;
     setProgress(0);
+    els.stageText.hidden = true;
     const t0 = performance.now();
     try {
       const { samples, sampleRate } = state.original;
@@ -415,6 +448,10 @@
       els.downloadProc.hidden = false;
       els.procMeta.textContent = `تمت في ${((performance.now() - t0) / 1000).toFixed(1)} ث`;
       showStats(result.stats);
+      const wanted = readOptions();
+      if (wanted.denoise && wanted.engine !== 'spectral' && result.stats && result.stats.engine === 'spectral') {
+        toast('نموذج الذكاء الاصطناعي غير متاح هنا (افتح التطبيق عبر http/https)، فاستُخدمت الطريقة الطيفية.', true);
+      }
       redrawAll();
       toast('تمت التنقية ✨ استمع وقارن بين النسختين');
       els.procAudio.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -425,7 +462,7 @@
       state.processing = false;
       els.processBtn.disabled = false;
       els.processBtn.textContent = '✨ نقِّ الصوت';
-      setTimeout(() => { els.progressWrap.hidden = true; }, 600);
+      setTimeout(() => { els.progressWrap.hidden = true; els.stageText.hidden = true; }, 600);
     }
   });
 
@@ -437,6 +474,7 @@
       ['نسبة الكلام للضوضاء قبل', b.snrDb.toFixed(1) + ' dB', ''],
       ['نسبة الكلام للضوضاء بعد', a.snrDb.toFixed(1) + ' dB', 'good'],
       ['مقدار التحسّن', (gain >= 0 ? '+' : '−') + Math.abs(gain).toFixed(1) + ' dB', gain >= 0 ? 'good' : ''],
+      ['الطريقة المستخدمة', ENGINE_NAMES[st.engine] || '—', 'method'],
     ];
     els.stats.innerHTML = items.map(([label, value, cls]) =>
       `<div class="stat"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`).join('');

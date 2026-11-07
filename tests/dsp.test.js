@@ -146,3 +146,91 @@ test('مدخلات قصيرة جداً أو صامتة لا تسبب أخطاء'
     for (const v of res.samples) assert.ok(Number.isFinite(v));
   }
 });
+
+// ------------------------------------------------------------------
+// RNNoise (الذكاء الاصطناعي)
+// ------------------------------------------------------------------
+const fs = require('node:fs');
+const path = require('node:path');
+const createRNNWasmModule = require('../vendor/rnnoise/rnnoise.js');
+const loadRNNoise = () => createRNNWasmModule({
+  wasmBinary: fs.readFileSync(path.join(__dirname, '../vendor/rnnoise/rnnoise.wasm')),
+});
+
+/** ضوضاء متغيرة: نقرات كيبورد + دفعات ضجيج متقطعة (لا تصلح لها البصمة الثابتة). */
+function nonStationaryNoise(n, seed) {
+  const r = rng(seed);
+  const y = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    if (r() < 6 / SR) {
+      for (let k = 0; k < SR * 0.015 && i + k < n; k++) y[i + k] += gauss(r) * Math.exp(-k / (SR * 0.003)) * 4;
+    }
+    const t = i / SR;
+    if (t % 4 < 1.2) y[i] += gauss(r) * 0.8 * Math.sin((Math.PI * (t % 4)) / 1.2);
+  }
+  return y;
+}
+
+test('إعادة التشكيل 16kHz→48kHz→16kHz دقيقة', () => {
+  const { x } = makeSpeech(2);
+  const x16 = DSP.resample(x, 48000, 16000);
+  assert.strictEqual(x16.length, x.length / 3);
+  const back = DSP.resample(DSP.resample(x16, 16000, 48000), 48000, 16000);
+  assert.strictEqual(back.length, x16.length);
+  assert.ok(snr(x16, back) > 60, 'snr=' + snr(x16, back));
+});
+
+test('RNNoise: تأخير الخوارزمية معوَّض بالكامل', async () => {
+  const mod = await loadRNNoise();
+  const { x } = makeSpeech(4);
+  const y = DSP.rnnoiseDenoise(x, SR, mod, { strength: 1 }).samples;
+  assert.strictEqual(y.length, x.length);
+  let best = -Infinity, lag = 0;
+  for (let L = -100; L <= 100; L++) {
+    let c = 0;
+    for (let i = 2000; i < x.length - 2000; i++) c += x[i] * y[i + L];
+    if (c > best) { best = c; lag = L; }
+  }
+  // بدون تعويض سيكون التأخير 480 عينة (10ms)
+  assert.ok(Math.abs(lag) <= 2, 'lag=' + lag);
+});
+
+test('RNNoise يتفوق على الطريقة الطيفية مع الضوضاء المتغيرة', async () => {
+  const mod = await loadRNNoise();
+  const { x: clean } = makeSpeech(8);
+  const nz = nonStationaryNoise(clean.length, 11);
+  let ec = 0, en = 0;
+  for (let i = 0; i < clean.length; i++) { ec += clean[i] ** 2; en += nz[i] ** 2; }
+  const k = Math.sqrt(ec / en) / DSP.dbToGain(5); // SNR = 5 dB
+  const noisy = clean.map((v, i) => v + nz[i] * k);
+
+  const base = { highpass: false, gate: false, eq: false, normalize: false, strength: 0.6, rnnoise: mod };
+  const spectral = DSP.processVoice(noisy, SR, Object.assign({}, base, { engine: 'spectral' }));
+  const ai = DSP.processVoice(noisy, SR, Object.assign({}, base, { engine: 'ai' }));
+  const hybrid = DSP.processVoice(noisy, SR, Object.assign({}, base, { engine: 'hybrid' }));
+  const r = { input: snr(clean, noisy), spectral: snr(clean, spectral.samples), ai: snr(clean, ai.samples), hybrid: snr(clean, hybrid.samples) };
+  console.log('ضوضاء متغيرة (SI-SNR dB):', Object.entries(r).map(([k, v]) => `${k}=${v.toFixed(1)}`).join('  '));
+
+  assert.strictEqual(ai.stats.engine, 'ai');
+  assert.strictEqual(hybrid.stats.engine, 'hybrid');
+  assert.ok(r.ai > r.input + 3, 'الذكاء الاصطناعي لم يحسّن بما يكفي');
+  assert.ok(r.ai > r.spectral + 2, 'الذكاء الاصطناعي لم يتفوق على الطيفي');
+  assert.ok(r.hybrid > r.input + 3);
+});
+
+test('عند غياب النموذج تُستخدم الطريقة الطيفية تلقائياً', () => {
+  const { x } = makeSpeech(2);
+  const res = DSP.processVoice(x, SR, { engine: 'hybrid', rnnoise: null });
+  assert.strictEqual(res.stats.engine, 'spectral');
+});
+
+test('RNNoise يعمل مع معدلات عيّنات مختلفة ومدخلات قصيرة', async () => {
+  const mod = await loadRNNoise();
+  for (const [len, sr] of [[0, 48000], [100, 48000], [44100, 44100], [16000, 16000], [8000 * 3, 8000]]) {
+    const r = rng(len + 1);
+    const x = new Float32Array(len).map(() => 0.1 * gauss(r));
+    const res = DSP.processVoice(x, sr, { engine: 'hybrid', rnnoise: mod });
+    assert.strictEqual(res.samples.length, len);
+    for (const v of res.samples) assert.ok(Number.isFinite(v));
+  }
+});

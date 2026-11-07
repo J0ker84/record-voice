@@ -400,6 +400,121 @@
   }
 
   // ------------------------------------------------------------------
+  // إعادة التشكيل (Resampling) — Windowed-sinc بجدول معامِلات مسبق الحساب
+  // ------------------------------------------------------------------
+  const resampleTables = new Map();
+  function resampleKernel(cutoff, width, res) {
+    const key = cutoff + ':' + width;
+    if (resampleTables.has(key)) return resampleTables.get(key);
+    const size = Math.ceil(width * res) + 2;
+    const table = new Float64Array(size);
+    for (let i = 0; i < size; i++) {
+      const d = i / res;
+      if (d >= width) { table[i] = 0; continue; }
+      const xx = d * cutoff;
+      const sinc = xx === 0 ? 1 : Math.sin(Math.PI * xx) / (Math.PI * xx);
+      const w = d / width; // نافذة Blackman
+      const win = 0.42 + 0.5 * Math.cos(Math.PI * w) + 0.08 * Math.cos(2 * Math.PI * w);
+      table[i] = cutoff * sinc * win;
+    }
+    resampleTables.set(key, table);
+    return table;
+  }
+
+  function resample(x, fromSr, toSr) {
+    if (fromSr === toSr) return Float32Array.from(x);
+    const ratio = toSr / fromSr;
+    const outLen = Math.round(x.length * ratio);
+    const out = new Float32Array(outLen);
+    const cutoff = Math.min(1, ratio) * 0.95;   // حماية من التشوه (aliasing) عند خفض المعدل
+    const width = Math.ceil(16 / cutoff);
+    const RES = 512;
+    const table = resampleKernel(cutoff, width, RES);
+    const n = x.length;
+    for (let i = 0; i < outLen; i++) {
+      const t = i / ratio;
+      const c = Math.floor(t);
+      const j0 = Math.max(0, c - width + 1);
+      const j1 = Math.min(n - 1, c + width);
+      let s = 0;
+      for (let j = j0; j <= j1; j++) {
+        const pos = Math.abs(t - j) * RES;
+        const k = pos | 0;
+        const frac = pos - k;
+        s += x[j] * (table[k] + (table[k + 1] - table[k]) * frac);
+      }
+      out[i] = s;
+    }
+    return out;
+  }
+
+  // ------------------------------------------------------------------
+  // إزالة الضوضاء بالذكاء الاصطناعي — RNNoise (شبكة عصبية متكررة)
+  // ------------------------------------------------------------------
+  const RNN_SR = 48000;
+  const RNN_FRAME = 480;      // 10ms عند 48kHz
+  const RNN_DELAY = 480;      // تأخير الخوارزمية بالعينات (يُعوَّض)
+
+  /**
+   * @param {Float32Array} x
+   * @param {number} sr
+   * @param {object} mod  وحدة RNNoise WebAssembly بعد تحميلها
+   * @param {object} opts strength: 0..1 (يحدد نسبة مزج الصوت الأصلي)
+   * @param {function} [progress]
+   * @returns {{samples: Float32Array, vad: Float32Array}}
+   */
+  function rnnoiseDenoise(x, sr, mod, opts, progress) {
+    opts = opts || {};
+    const strength = clamp(opts.strength == null ? 0.6 : opts.strength, 0, 1);
+    const report = progress || function () {};
+    const len = x.length;
+    if (len === 0) return { samples: new Float32Array(0), vad: new Float32Array(0) };
+
+    const x48 = resample(x, sr, RNN_SR);
+    report(0.15);
+    const n = x48.length;
+    const total = n + RNN_DELAY;
+    const frames = Math.ceil(total / RNN_FRAME);
+    const wet = new Float32Array(frames * RNN_FRAME);
+    const vad = new Float32Array(frames);
+
+    const st = mod._rnnoise_create(0);
+    const inPtr = mod._malloc(RNN_FRAME * 4);
+    const outPtr = mod._malloc(RNN_FRAME * 4);
+    const SCALE = 32768; // RNNoise يتوقع عينات بمدى int16
+    const reportEvery = Math.max(1, Math.floor(frames / 40));
+    try {
+      for (let f = 0; f < frames; f++) {
+        const heap = mod.HEAPF32; // قد تتغير عند نمو الذاكرة
+        const ib = inPtr >> 2, ob = outPtr >> 2, off = f * RNN_FRAME;
+        for (let i = 0; i < RNN_FRAME; i++) {
+          const k = off + i;
+          heap[ib + i] = k < n ? x48[k] * SCALE : 0;
+        }
+        vad[f] = mod._rnnoise_process_frame(st, outPtr, inPtr);
+        const h2 = mod.HEAPF32;
+        for (let i = 0; i < RNN_FRAME; i++) wet[off + i] = h2[ob + i] / SCALE;
+        if (f % reportEvery === 0) report(0.15 + 0.7 * (f / frames));
+      }
+    } finally {
+      mod._rnnoise_destroy(st);
+      mod._free(inPtr);
+      mod._free(outPtr);
+    }
+
+    // تعويض التأخير + مزج نسبة صغيرة من الأصل حسب الشدة (لصوت أكثر طبيعية)
+    const dry = dbToGain(-(6 + 34 * strength));
+    const y48 = new Float32Array(n);
+    for (let i = 0; i < n; i++) y48[i] = (1 - dry) * wet[i + RNN_DELAY] + dry * x48[i];
+
+    report(0.9);
+    let y = resample(y48, RNN_SR, sr);
+    if (y.length !== len) { const t = new Float32Array(len); t.set(y.subarray(0, len)); y = t; }
+    report(1);
+    return { samples: y, vad };
+  }
+
+  // ------------------------------------------------------------------
   // السلسلة الكاملة
   // ------------------------------------------------------------------
   const DEFAULTS = {
@@ -407,6 +522,8 @@
     highpassFreq: 80,
     hum: 0,            // 0 = معطّل، 50 أو 60
     denoise: true,
+    engine: 'hybrid',  // 'ai' | 'hybrid' | 'spectral'
+    rnnoise: null,     // وحدة RNNoise المحمّلة (مطلوبة لـ ai و hybrid)
     strength: 0.6,
     noiseProfile: 'auto',
     noiseSeconds: 1,
@@ -426,8 +543,22 @@
     if (o.highpass) highpass(x, sr, o.highpassFreq);
     if (o.hum === 50 || o.hum === 60) removeHum(x, sr, o.hum);
 
+    let engineUsed = 'none';
     if (o.denoise) {
-      x = spectralDenoise(x, sr, o, (p) => report(0.05 + p * 0.8, 'denoise'));
+      let engine = o.engine;
+      if ((engine === 'ai' || engine === 'hybrid') && !o.rnnoise) engine = 'spectral'; // النموذج غير متاح
+      if (engine === 'ai' || engine === 'hybrid') {
+        const span = engine === 'hybrid' ? 0.6 : 0.8;
+        x = rnnoiseDenoise(x, sr, o.rnnoise, o, (p) => report(0.05 + p * span, 'ai')).samples;
+        if (engine === 'hybrid') {
+          // تمريرة طيفية خفيفة لإزالة بقايا الضوضاء الثابتة بعد النموذج
+          const so = Object.assign({}, o, { strength: o.strength * 0.5, noiseProfile: 'auto' });
+          x = spectralDenoise(x, sr, so, (p) => report(0.65 + p * 0.2, 'denoise'));
+        }
+      } else {
+        x = spectralDenoise(x, sr, o, (p) => report(0.05 + p * 0.8, 'denoise'));
+      }
+      engineUsed = engine;
     }
     report(0.87, 'gate');
     if (o.gate) noiseGate(x, sr);
@@ -439,7 +570,7 @@
 
     const after = levelStats(x, sr);
     report(1, 'done');
-    return { samples: x, stats: { before, after } };
+    return { samples: x, stats: { before, after, engine: engineUsed } };
   }
 
   const AudioDSP = {
@@ -453,6 +584,9 @@
     removeHum,
     voiceEQ,
     spectralDenoise,
+    resample,
+    rnnoiseDenoise,
+    RNN_SR,
     noiseGate,
     compressor,
     normalize,

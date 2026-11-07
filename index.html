@@ -58,6 +58,24 @@
       <h2><span class="step">2</span> إعدادات التنقية</h2>
 
       <div class="field">
+        <label>طريقة إزالة الضوضاء</label>
+        <div class="engines" role="radiogroup">
+          <label class="engine">
+            <input type="radio" name="engine" value="hybrid" checked>
+            <span><b>🤖 ذكاء اصطناعي + طيفي</b> <em class="badge">موصى به</em><br><small>شبكة RNNoise العصبية ثم تنقية طيفية للبقايا — الأفضل لمعظم التسجيلات</small></span>
+          </label>
+          <label class="engine">
+            <input type="radio" name="engine" value="ai">
+            <span><b>🧠 ذكاء اصطناعي فقط (RNNoise)</b><br><small>للضوضاء المتغيرة: نقر الكيبورد، أصوات الشارع، الضجيج المتقطع</small></span>
+          </label>
+          <label class="engine">
+            <input type="radio" name="engine" value="spectral">
+            <span><b>📊 طيفي كلاسيكي</b><br><small>للضوضاء الثابتة فقط: الهسهسة، المكيّف، المروحة — يحافظ على طبيعية الصوت</small></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="field">
         <div class="field-head">
           <label for="strength">شدة إزالة الضوضاء</label>
           <output id="strengthOut">60%</output>
@@ -66,7 +84,7 @@
         <div class="range-labels"><span>خفيفة (طبيعية)</span><span>قوية</span></div>
       </div>
 
-      <div class="field">
+      <div class="field" id="noiseProfileField" hidden>
         <label for="noiseProfile">مصدر بصمة الضوضاء</label>
         <select id="noiseProfile">
           <option value="auto">تلقائي — من أهدأ المقاطع في التسجيل</option>
@@ -96,6 +114,7 @@
         <div id="progressFill" class="progress-fill"></div>
         <span id="progressText">0%</span>
       </div>
+      <div id="stageText" class="stage" hidden></div>
     </section>
 
     <!-- 3) المقارنة والتحميل -->
