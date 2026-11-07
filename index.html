@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>صوت نقي — تسجيل وتنقية الصوت</title>
+  <title>صوت نقي — تنقية التسجيلات الصوتية</title>
   <meta name="description" content="سجّل صوتك ثم نقّه من الضوضاء والطنين مباشرة في المتصفح — بدون رفع أي ملف إلى الإنترنت.">
   <meta name="theme-color" content="#0f766e">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="apple-touch-icon" href="icon-192.png">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -17,45 +17,48 @@
       <img src="icon.svg" alt="" width="40" height="40">
       <div>
         <h1>صوت نقي</h1>
-        <p>سجّل صوتك ونقّه من الضوضاء — كل المعالجة تتم على جهازك</p>
+        <p>نقِّ تسجيلاتك من الضوضاء — كل المعالجة تتم على جهازك</p>
       </div>
     </div>
   </header>
 
   <main>
-    <!-- 1) التسجيل -->
+    <!-- 1) فتح التسجيل -->
     <section class="card" id="recordCard">
-      <h2><span class="step">1</span> التسجيل</h2>
+      <h2><span class="step">1</span> افتح التسجيل</h2>
 
-      <div class="recorder">
-        <button id="recordBtn" class="record-btn" type="button" aria-label="ابدأ التسجيل">
-          <span class="record-dot"></span>
-        </button>
-        <div class="rec-info">
-          <div id="timer" class="timer">00:00</div>
-          <div id="recStatus" class="muted">اضغط الزر الأحمر لبدء التسجيل</div>
-          <div class="meter" aria-hidden="true"><div id="meterFill" class="meter-fill"></div></div>
+      <label class="open-btn">
+        <input id="fileInput" type="file" accept="audio/*,video/*,.m4a,.aac,.amr,.3gp,.opus">
+        <span class="open-icon">📂</span>
+        <span><b>اختر ملف التسجيل</b><br><small>من تطبيق المسجّل في هاتفك (M4A، MP3، WAV…)</small></span>
+      </label>
+      <p class="tip">📲 <b>أسرع طريقة:</b> بعد تثبيت التطبيق على الشاشة الرئيسية، افتح تسجيلك في تطبيق المسجّل واضغط <b>مشاركة ← صوت نقي</b>.</p>
+      <div id="fileStatus" class="muted center small-text"></div>
+
+      <details class="more" id="recordDetails">
+        <summary>🎙️ أو سجّل من هنا مباشرة</summary>
+        <div class="recorder">
+          <button id="recordBtn" class="record-btn" type="button" aria-label="ابدأ التسجيل">
+            <span class="record-dot"></span>
+          </button>
+          <div class="rec-info">
+            <div id="timer" class="timer">00:00</div>
+            <div id="recStatus" class="muted">اضغط الزر الأحمر لبدء التسجيل</div>
+            <div class="meter" aria-hidden="true"><div id="meterFill" class="meter-fill"></div></div>
+          </div>
         </div>
-      </div>
-
-      <canvas id="liveCanvas" class="wave live" height="80"></canvas>
-
-      <div class="row">
-        <label class="file-btn">
-          <input id="fileInput" type="file" accept="audio/*,video/*">
-          📂 أو افتح ملفاً صوتياً
-        </label>
+        <canvas id="liveCanvas" class="wave live" height="80"></canvas>
         <label class="check small">
           <input id="browserNs" type="checkbox">
           <span>تفعيل كاتم ضوضاء المتصفح أثناء التسجيل</span>
         </label>
-      </div>
-      <p class="tip">💡 للحصول على أفضل نتيجة: ابقَ صامتاً أول ثانية من التسجيل حتى يتعرّف التطبيق على "بصمة" الضوضاء.</p>
+        <p class="tip">💡 أبقِ الشاشة مضاءة أثناء التسجيل؛ قفلها قد يوقف التسجيل في المتصفح.</p>
+      </details>
     </section>
 
     <!-- 2) إعدادات المعالجة -->
     <section class="card" id="settingsCard">
-      <h2><span class="step">2</span> إعدادات التنقية</h2>
+      <h2><span class="step">2</span> التنقية</h2>
 
       <div class="field">
         <label>طريقة إزالة الضوضاء</label>
@@ -66,7 +69,7 @@
           </label>
           <label class="engine">
             <input type="radio" name="engine" value="ai">
-            <span><b>🧠 ذكاء اصطناعي فقط (RNNoise)</b><br><small>للضوضاء المتغيرة: نقر الكيبورد، أصوات الشارع، الضجيج المتقطع</small></span>
+            <span><b>🧠 ذكاء اصطناعي فقط (RNNoise)</b><br><small>للضوضاء المتغيرة: أصوات الشارع، الأطفال، الضجيج المتقطع</small></span>
           </label>
           <label class="engine">
             <input type="radio" name="engine" value="spectral">
@@ -82,32 +85,49 @@
         </div>
         <input id="strength" type="range" min="0" max="100" value="60">
         <div class="range-labels"><span>خفيفة (طبيعية)</span><span>قوية</span></div>
-      </div>
-
-      <div class="field" id="noiseProfileField" hidden>
-        <label for="noiseProfile">مصدر بصمة الضوضاء</label>
-        <select id="noiseProfile">
-          <option value="auto">تلقائي — من أهدأ المقاطع في التسجيل</option>
-          <option value="start">أول ثانية من التسجيل (كنتُ صامتاً)</option>
-        </select>
+        <p class="hint">🎤 إذا كان كاتم الضوضاء في الميكروفون اللاسلكي مفعّلاً، فابدأ بشدة خفيفة (30–40%) حتى لا يصبح الصوت معدنياً.</p>
       </div>
 
       <div class="field">
-        <label for="hum">إزالة الطنين الكهربائي</label>
-        <select id="hum">
-          <option value="0">معطّل</option>
-          <option value="50">50 هرتز (الخليج، أوروبا، معظم الدول العربية)</option>
-          <option value="60">60 هرتز (السعودية، أمريكا)</option>
+        <label for="loudness">مستوى الصوت النهائي</label>
+        <select id="loudness">
+          <option value="-16">‎-16 LUFS — موصى به لفيديوهات الشرح</option>
+          <option value="-14">‎-14 LUFS — أعلى (يوتيوب ومنصات التواصل)</option>
+          <option value="-19">‎-19 LUFS — أهدأ (إذا ستضيف موسيقى خلفية)</option>
+          <option value="peak">رفع إلى أقصى مستوى دون تشويه فقط</option>
+          <option value="off">بدون تغيير</option>
         </select>
+        <p class="hint">يجعل كل فيديوهاتك بنفس ارتفاع الصوت تقريباً، مهما اختلف بعدك عن الميكروفون.</p>
       </div>
 
-      <div class="checks">
-        <label class="check"><input id="optHighpass" type="checkbox" checked><span>إزالة الهمهمة والاهتزازات المنخفضة</span></label>
-        <label class="check"><input id="optGate" type="checkbox" checked><span>كتم الضوضاء في فترات الصمت</span></label>
-        <label class="check"><input id="optEq" type="checkbox" checked><span>تحسين وضوح الصوت</span></label>
-        <label class="check"><input id="optCompress" type="checkbox"><span>توحيد مستوى الصوت (ضاغط)</span></label>
-        <label class="check"><input id="optNormalize" type="checkbox" checked><span>رفع مستوى الصوت تلقائياً</span></label>
-      </div>
+      <details class="more">
+        <summary>⚙️ إعدادات متقدمة</summary>
+
+        <div class="field" id="noiseProfileField" hidden>
+          <label for="noiseProfile">مصدر بصمة الضوضاء</label>
+          <select id="noiseProfile">
+            <option value="auto">تلقائي — من أهدأ المقاطع في التسجيل</option>
+            <option value="start">أول ثانية من التسجيل (كنتُ صامتاً)</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="hum">إزالة الطنين الكهربائي</label>
+          <select id="hum">
+            <option value="0">معطّل</option>
+            <option value="50">50 هرتز (الخليج، أوروبا، معظم الدول العربية)</option>
+            <option value="60">60 هرتز (السعودية، أمريكا)</option>
+          </select>
+        </div>
+
+        <div class="checks">
+          <label class="check"><input id="optHighpass" type="checkbox" checked><span>إزالة الهمهمة والاهتزازات المنخفضة</span></label>
+          <label class="check"><input id="optGate" type="checkbox" checked><span>كتم الضوضاء في فترات الصمت</span></label>
+          <label class="check"><input id="optEq" type="checkbox" checked><span>تحسين وضوح الصوت</span></label>
+          <label class="check"><input id="optCompress" type="checkbox" checked><span>صوت متوازن (ضاغط خفيف)</span></label>
+        </div>
+        <button id="resetSettings" class="text-btn" type="button">↺ استعادة الإعدادات الافتراضية</button>
+      </details>
 
       <button id="processBtn" class="primary" type="button" disabled>✨ نقِّ الصوت</button>
       <div id="progressWrap" class="progress" hidden>
@@ -133,14 +153,17 @@
       <div class="track">
         <div class="track-head">
           <h3>✨ بعد التنقية <small id="procMeta" class="muted"></small></h3>
-          <a id="downloadProc" class="link-btn accent" download hidden>⬇ تحميل WAV</a>
+          <div class="actions">
+            <button id="shareProc" class="link-btn" type="button" hidden>↗ مشاركة</button>
+            <a id="downloadProc" class="link-btn accent" download hidden>⬇ تحميل WAV</a>
+          </div>
         </div>
         <canvas id="procCanvas" class="wave processed" height="90"></canvas>
         <audio id="procAudio" controls preload="metadata"></audio>
       </div>
 
       <div id="stats" class="stats" hidden></div>
-      <p id="emptyHint" class="muted center">سجّل صوتاً أو افتح ملفاً للبدء.</p>
+      <p id="emptyHint" class="muted center">افتح تسجيلاً للبدء.</p>
     </section>
   </main>
 

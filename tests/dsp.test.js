@@ -234,3 +234,62 @@ test('RNNoise يعمل مع معدلات عيّنات مختلفة ومدخلا�
     for (const v of res.samples) assert.ok(Number.isFinite(v));
   }
 });
+
+// ------------------------------------------------------------------
+// الجهارة، المحدِّد، القنوات، والمعالجة في المكان
+// ------------------------------------------------------------------
+test('قياس الجهارة يطابق معيار ITU (نغمة 997Hz بمستوى 0dBFS = -3.01 LUFS)', () => {
+  const x = new Float32Array(SR * 5).map((_, i) => Math.sin((2 * Math.PI * 997 * i) / SR));
+  assert.ok(Math.abs(DSP.measureLoudness(x, SR, false) + 3.01) < 0.05);
+  // الملف الأحادي يُقاس كما يُسمع على السماعتين (+3.01dB)
+  assert.ok(Math.abs(DSP.measureLoudness(x, SR) - 0) < 0.05);
+  // ومعاملات K-weighting صحيحة عند 44.1kHz أيضاً (الفرق ضئيل جداً)
+  const y = new Float32Array(44100 * 5).map((_, i) => Math.sin((2 * Math.PI * 997 * i) / 44100));
+  assert.ok(Math.abs(DSP.measureLoudness(y, 44100, false) + 3.01) < 0.1);
+});
+
+test('ضبط الجهارة يصل للهدف دون تجاوز -1dBFS', () => {
+  for (const target of [-16, -14]) {
+    const { x } = makeSpeech(8);
+    for (let i = 0; i < x.length; i++) x[i] *= 0.2; // تسجيل منخفض
+    DSP.normalizeLoudness(x, SR, target, -1);
+    let peak = 0;
+    for (const v of x) peak = Math.max(peak, Math.abs(v));
+    const L = DSP.measureLoudness(x, SR);
+    assert.ok(Math.abs(L - target) < 0.3, `target ${target} got ${L.toFixed(2)}`);
+    assert.ok(DSP.gainToDb(peak) <= -0.999, 'peak ' + DSP.gainToDb(peak));
+  }
+});
+
+test('المحدِّد لا يتجاوز السقف ولا يغيّر الأجزاء الهادئة', () => {
+  const r = rng(4);
+  const x = new Float32Array(SR * 2).map((_, i) => 0.2 * Math.sin(i / 9) + (i === SR ? 3 : 0) + 0.01 * gauss(r));
+  const quietBefore = x[SR / 2];
+  DSP.limiter(x, SR, -1);
+  for (const v of x) assert.ok(Math.abs(v) <= DSP.dbToGain(-1) + 1e-6);
+  assert.ok(Math.abs(x[SR / 2] - quietBefore) < 1e-6, 'أثّر على جزء بعيد عن القمة');
+});
+
+test('التحويل الذكي إلى Mono يتجاهل القناة الفارغة في الميكروفونات اللاسلكية', () => {
+  const { x } = makeSpeech(2);
+  const r = rng(8);
+  const hiss = new Float32Array(x.length).map(() => 0.0005 * gauss(r));
+  const single = DSP.smartMono([hiss, x]);
+  assert.strictEqual(single.mode, 'single');
+  assert.strictEqual(single.channel, 1);
+  assert.deepStrictEqual(single.samples, Float32Array.from(x));
+  // قناتان متشابهتان → دمج
+  const both = DSP.smartMono([x, x.map((v) => v * 0.8)]);
+  assert.strictEqual(both.mode, 'mix');
+});
+
+test('المعالجة في المكان (لتوفير الذاكرة) تعطي النتيجة نفسها تماماً', async () => {
+  const mod = await loadRNNoise();
+  const { x: clean } = makeSpeech(4);
+  const noisy = addNoise(clean, -30, -40, 21);
+  const opts = { engine: 'hybrid', rnnoise: mod, compress: true, loudness: -16, hum: 50 };
+  const a = DSP.processVoice(noisy, SR, opts).samples;
+  const b = DSP.processVoice(Float32Array.from(noisy), SR, Object.assign({}, opts, { inPlace: true })).samples;
+  assert.strictEqual(a.length, b.length);
+  for (let i = 0; i < a.length; i++) assert.ok(Math.abs(a[i] - b[i]) < 1e-6, 'اختلاف عند ' + i);
+});

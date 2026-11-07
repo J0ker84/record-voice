@@ -9,7 +9,8 @@
     browserNs: $('#browserNs'), strength: $('#strength'), strengthOut: $('#strengthOut'),
     noiseProfile: $('#noiseProfile'), hum: $('#hum'), optHighpass: $('#optHighpass'),
     optGate: $('#optGate'), optEq: $('#optEq'), optCompress: $('#optCompress'),
-    optNormalize: $('#optNormalize'), processBtn: $('#processBtn'),
+    loudness: $('#loudness'), processBtn: $('#processBtn'), shareProc: $('#shareProc'),
+    fileStatus: $('#fileStatus'), resetSettings: $('#resetSettings'),
     progressWrap: $('#progressWrap'), stageText: $('#stageText'), progressFill: $('#progressFill'), progressText: $('#progressText'),
     origCanvas: $('#origCanvas'), procCanvas: $('#procCanvas'), origAudio: $('#origAudio'),
     procAudio: $('#procAudio'), origMeta: $('#origMeta'), procMeta: $('#procMeta'),
@@ -289,11 +290,12 @@
       const audio = await decodeAudio(await blob.arrayBuffer());
       const channels = [];
       for (let c = 0; c < audio.numberOfChannels; c++) channels.push(audio.getChannelData(c));
-      const samples = AudioDSP.toMono(channels);
+      const mono = AudioDSP.smartMono(channels);
+      const samples = mono.samples;
 
       if (state.origUrl) URL.revokeObjectURL(state.origUrl);
       state.origUrl = URL.createObjectURL(blob);
-      state.original = { samples, sampleRate: audio.sampleRate, name };
+      state.original = { samples, sampleRate: audio.sampleRate, name, mono };
       clearProcessed();
 
       els.origAudio.src = state.origUrl;
@@ -302,11 +304,18 @@
       els.downloadOrig.hidden = false;
       els.timer.textContent = fmtTime(audio.duration);
       els.origMeta.textContent = `${fmtTime(audio.duration)} · ${(audio.sampleRate / 1000).toFixed(1)} kHz`;
+      if (mono.mode === 'single') {
+        // ميكروفون لاسلكي بجهازَي إرسال يستخدم قناة واحدة فقط
+        els.origMeta.textContent += ` · القناة ${mono.channel === 0 ? 'اليسرى' : 'اليمنى'} فقط`;
+        toast('القناة الأخرى في التسجيل شبه فارغة، فاستُخدمت قناة الميكروفون وحدها لتجنّب إضافة ضجيجها.');
+      }
+      els.fileStatus.textContent = '✔ ' + name;
       els.emptyHint.hidden = true;
       els.processBtn.disabled = false;
       redrawAll();
     } catch (err) {
       console.error(err);
+      els.fileStatus.textContent = '';
       toast('تعذّرت قراءة الملف الصوتي. تأكد أنه بصيغة مدعومة (WAV, MP3, M4A, OGG, WEBM).', true);
     }
   }
@@ -318,6 +327,7 @@
     els.procAudio.removeAttribute('src');
     els.procAudio.load();
     els.downloadProc.hidden = true;
+    els.shareProc.hidden = true;
     els.procMeta.textContent = '';
     els.stats.hidden = true;
   }
@@ -325,9 +335,8 @@
   els.fileInput.addEventListener('change', async () => {
     const file = els.fileInput.files && els.fileInput.files[0];
     if (!file) return;
-    els.recStatus.textContent = 'جارٍ قراءة الملف…';
+    els.fileStatus.textContent = 'جارٍ قراءة الملف…';
     await loadBlob(file, file.name);
-    els.recStatus.textContent = state.original ? 'تم تحميل الملف ✔' : 'اضغط الزر الأحمر لبدء التسجيل';
     els.fileInput.value = '';
   });
 
@@ -335,6 +344,30 @@
   // المعالجة
   // ------------------------------------------------------------------
   els.strength.addEventListener('input', () => { els.strengthOut.textContent = els.strength.value + '%'; });
+
+  // حفظ الإعدادات المفضلة على هذا الجهاز
+  const SETTINGS_KEY = 'sawt-naqi-settings-v1';
+  const settingControls = ['strength', 'noiseProfile', 'hum', 'loudness', 'optHighpass', 'optGate', 'optEq', 'optCompress'];
+  const defaultSettings = {};
+  function snapshotSettings() {
+    const o = { engine: selectedEngine() };
+    for (const k of settingControls) o[k] = els[k].type === 'checkbox' ? els[k].checked : els[k].value;
+    return o;
+  }
+  function applySettings(o) {
+    if (!o) return;
+    for (const k of settingControls) {
+      if (!(k in o)) continue;
+      if (els[k].type === 'checkbox') els[k].checked = !!o[k]; else els[k].value = o[k];
+    }
+    const r = document.querySelector(`input[name="engine"][value="${o.engine}"]`);
+    if (r) r.checked = true;
+    els.strengthOut.textContent = els.strength.value + '%';
+    syncEngineUI();
+  }
+  function saveSettings() {
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(snapshotSettings())); } catch (e) { /* وضع التصفح الخاص */ }
+  }
 
   const ENGINE_NAMES = {
     hybrid: 'ذكاء اصطناعي + طيفي',
@@ -349,7 +382,8 @@
     denoise: 'التنقية الطيفية…',
     gate: 'كتم فترات الصمت…',
     eq: 'تحسين الوضوح…',
-    compress: 'ضبط المستوى…',
+    compress: 'موازنة الصوت…',
+    level: 'ضبط مستوى الصوت النهائي…',
     done: 'اكتمل',
   };
 
@@ -361,6 +395,16 @@
   }
   engineRadios.forEach((r) => r.addEventListener('change', syncEngineUI));
   syncEngineUI();
+
+  Object.assign(defaultSettings, snapshotSettings());
+  try { applySettings(JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null')); } catch (e) { /* تجاهل */ }
+  document.querySelector('#settingsCard').addEventListener('change', saveSettings);
+  els.strength.addEventListener('change', saveSettings);
+  els.resetSettings.addEventListener('click', () => {
+    applySettings(defaultSettings);
+    saveSettings();
+    toast('تمت استعادة الإعدادات الافتراضية');
+  });
 
   function readOptions() {
     const s = Number(els.strength.value) / 100;
@@ -375,7 +419,8 @@
       gate: els.optGate.checked,
       eq: els.optEq.checked,
       compress: els.optCompress.checked,
-      normalize: els.optNormalize.checked,
+      loudness: /^-\d+$/.test(els.loudness.value) ? Number(els.loudness.value) : null,
+      normalize: els.loudness.value === 'peak',
     };
   }
 
@@ -417,7 +462,8 @@
       };
       w.onerror = (e) => { e.preventDefault(); worker = false; reject(new Error(e.message || 'worker error')); };
       const copy = Float32Array.from(samples);
-      w.postMessage({ samples: copy, sampleRate, options }, [copy.buffer]);
+      // النسخة مُرسَلة للعامل، فيمكنه معالجتها في مكانها لتوفير الذاكرة
+      w.postMessage({ samples: copy, sampleRate, options: Object.assign({}, options, { inPlace: true }) }, [copy.buffer]);
     });
   }
 
@@ -441,11 +487,17 @@
       }
       clearProcessed();
       state.processed = { samples: result.samples, sampleRate };
-      state.procUrl = URL.createObjectURL(encodeWav(result.samples, sampleRate));
+      const wavBlob = encodeWav(result.samples, sampleRate);
+      state.procUrl = URL.createObjectURL(wavBlob);
       els.procAudio.src = state.procUrl;
       els.downloadProc.href = state.procUrl;
       els.downloadProc.download = baseName(state.original.name) + '-نقي.wav';
       els.downloadProc.hidden = false;
+      state.procFile = null;
+      try {
+        const f = new File([wavBlob], els.downloadProc.download, { type: 'audio/wav' });
+        if (navigator.canShare && navigator.canShare({ files: [f] })) { state.procFile = f; els.shareProc.hidden = false; }
+      } catch (e) { /* المشاركة غير مدعومة */ }
       els.procMeta.textContent = `تمت في ${((performance.now() - t0) / 1000).toFixed(1)} ث`;
       showStats(result.stats);
       const wanted = readOptions();
@@ -469,17 +521,29 @@
   function showStats(st) {
     if (!st) return;
     const b = st.before, a = st.after;
-    const gain = a.snrDb - b.snrDb;
+    // الفرق بين مستوى الكلام ومستوى الضوضاء في فترات الصمت.
+    // ملاحظة: هذا يقيس الفراغات بين الكلام فقط (حيث يعمل كتم الصمت أيضاً)،
+    // ولا يعني أن الكلام نفسه أنقى بالمقدار ذاته.
+    const fmt = (v) => (v > 0 ? '−' : '+') + Math.abs(v).toFixed(0) + ' dB';
     const items = [
-      ['نسبة الكلام للضوضاء قبل', b.snrDb.toFixed(1) + ' dB', ''],
-      ['نسبة الكلام للضوضاء بعد', a.snrDb.toFixed(1) + ' dB', 'good'],
-      ['مقدار التحسّن', (gain >= 0 ? '+' : '−') + Math.abs(gain).toFixed(1) + ' dB', gain >= 0 ? 'good' : ''],
-      ['الطريقة المستخدمة', ENGINE_NAMES[st.engine] || '—', 'method'],
+      ['الضوضاء في فترات الصمت (قبل)', fmt(b.snrDb), '', 'أخفض من صوتك بهذا المقدار'],
+      ['الضوضاء في فترات الصمت (بعد)', fmt(a.snrDb), 'good', 'أخفض من صوتك بهذا المقدار'],
+      ['مستوى الصوت النهائي', Number.isFinite(a.lufs) ? a.lufs.toFixed(1) + ' LUFS' : '—', '', ''],
+      ['الطريقة المستخدمة', ENGINE_NAMES[st.engine] || '—', 'method', ''],
     ];
-    els.stats.innerHTML = items.map(([label, value, cls]) =>
-      `<div class="stat"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`).join('');
+    els.stats.innerHTML = items.map(([label, value, cls, note]) =>
+      `<div class="stat"><div class="label">${label}</div><div class="value ${cls}">${value}</div>${note ? `<div class="note">${note}</div>` : ''}</div>`).join('');
     els.stats.hidden = false;
   }
+
+  els.shareProc.addEventListener('click', async () => {
+    if (!state.procFile) return;
+    try {
+      await navigator.share({ files: [state.procFile], title: state.procFile.name });
+    } catch (err) {
+      if (err && err.name !== 'AbortError') toast('تعذّرت المشاركة، استخدم زر التحميل بدلاً منها.', true);
+    }
+  });
 
   // تشغيل نسخة واحدة فقط في كل مرة لتسهيل المقارنة
   els.origAudio.addEventListener('play', () => els.procAudio.pause());
@@ -491,6 +555,29 @@
   if ('serviceWorker' in navigator && window.isSecureContext && location.protocol !== 'file:') {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
   }
+
+  // ------------------------------------------------------------------
+  // استقبال ملف مُشارَك من تطبيق آخر (Android: مشاركة ← صوت نقي)
+  // ------------------------------------------------------------------
+  async function loadSharedFile() {
+    const params = new URLSearchParams(location.search);
+    if (!params.has('shared') || !('caches' in window)) return;
+    history.replaceState(null, '', location.pathname);
+    try {
+      const cache = await caches.open('sawt-naqi-shared');
+      const res = await cache.match('shared-audio');
+      if (!res) { toast('لم يصل الملف المُشارَك، جرّب فتحه من زر «اختر ملف التسجيل».', true); return; }
+      const name = decodeURIComponent(res.headers.get('x-file-name') || 'تسجيل');
+      const blob = await res.blob();
+      await cache.delete('shared-audio');
+      els.fileStatus.textContent = 'جارٍ قراءة الملف المُشارَك…';
+      await loadBlob(blob, name);
+    } catch (err) {
+      console.error(err);
+      toast('تعذّرت قراءة الملف المُشارَك.', true);
+    }
+  }
+  loadSharedFile();
 
   redrawAll();
 })();

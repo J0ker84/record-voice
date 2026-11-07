@@ -162,6 +162,35 @@ main {
 }
 .file-btn input { display: none; }
 
+.open-btn {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px;
+  border: 2px dashed var(--accent);
+  border-radius: 14px;
+  background: var(--accent-soft);
+  cursor: pointer;
+  transition: transform .1s;
+}
+.open-btn:active { transform: scale(.99); }
+.open-btn input { display: none; }
+.open-btn .open-icon { font-size: 2rem; }
+.open-btn b { font-size: 1.1rem; color: var(--accent); }
+.open-btn small { color: var(--muted); }
+.small-text { font-size: .9rem; margin-top: 8px; }
+.small-text:empty { display: none; }
+
+details.more { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
+details.more > summary { cursor: pointer; font-weight: 600; color: var(--accent); padding: 6px 0; list-style-position: inside; }
+details.more[open] > summary { margin-bottom: 12px; }
+#settingsCard details.more { margin: 0 0 16px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+
+.hint { margin: 6px 0 0; font-size: .84rem; color: var(--muted); }
+.text-btn { background: none; border: 0; color: var(--muted); font: inherit; font-size: .88rem; cursor: pointer; padding: 4px 0 10px; text-decoration: underline; }
+.actions { display: flex; gap: 6px; }
+button.link-btn { background: var(--card); font: inherit; font-size: .88rem; font-weight: 600; cursor: pointer; }
+
 /* ---------- الإعدادات ---------- */
 .field { margin-bottom: 16px; }
 .field > label, .field-head label { display: block; font-weight: 600; margin-bottom: 6px; }
@@ -275,6 +304,7 @@ audio { width: 100%; height: 40px; }
 .stat .label { font-size: .8rem; color: var(--muted); }
 .stat .value { font-size: 1.15rem; font-weight: 700; direction: ltr; }
 .stat .value.good { color: var(--accent); }
+.stat .note { font-size: .72rem; color: var(--muted); margin-top: 2px; }
 .stat .value.method { direction: rtl; font-size: .95rem; }
 
 .app-footer { text-align: center; color: var(--muted); font-size: .85rem; padding: 24px 16px 32px; }

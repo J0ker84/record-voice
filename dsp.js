@@ -22,16 +22,38 @@
   const dbToGain = (db) => Math.pow(10, db / 20);
   const gainToDb = (g) => 20 * Math.log10(Math.max(g, 1e-12));
 
-  /** دمج عدة قنوات في قناة واحدة (Mono). */
-  function toMono(channels) {
-    if (channels.length === 1) return Float32Array.from(channels[0]);
+  /**
+   * تحويل ذكي إلى قناة واحدة (Mono).
+   * بعض الميكروفونات اللاسلكية ذات جهازَي الإرسال تضع كل ميكروفون في قناة؛ فإذا
+   * استُخدم ميكروفون واحد تبقى القناة الأخرى صامتة أو فيها ضجيج فقط. دمجهما
+   * بالتساوي يضيف ذلك الضجيج، لذا تُستخدم القناة المسموعة وحدها عندما تكون
+   * الأخرى أهدأ منها بأكثر من 15dB.
+   * @returns {{samples: Float32Array, mode: 'mono'|'mix'|'single', channel: number}}
+   */
+  function smartMono(channels) {
+    if (channels.length === 1) return { samples: Float32Array.from(channels[0]), mode: 'mono', channel: 0 };
     const len = channels[0].length;
+    const rms = channels.map((ch) => {
+      let t = 0;
+      for (let i = 0; i < len; i += 4) t += ch[i] * ch[i];
+      return Math.sqrt(t / Math.max(1, Math.ceil(len / 4)));
+    });
+    let loud = 0;
+    for (let c = 1; c < rms.length; c++) if (rms[c] > rms[loud]) loud = c;
+    const others = rms.filter((_, c) => c !== loud);
+    if (rms[loud] > 0 && others.every((r) => gainToDb(r) < gainToDb(rms[loud]) - 15)) {
+      return { samples: Float32Array.from(channels[loud]), mode: 'single', channel: loud };
+    }
     const out = new Float32Array(len);
     const k = 1 / channels.length;
     for (const ch of channels) {
       for (let i = 0; i < len; i++) out[i] += ch[i] * k;
     }
-    return out;
+    return { samples: out, mode: 'mix', channel: -1 };
+  }
+
+  function toMono(channels) {
+    return smartMono(channels).samples;
   }
 
   /** نسبة مئوية (percentile) لمصفوفة أرقام. */
@@ -226,16 +248,17 @@
     const win = new Float64Array(N);
     for (let i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / N);
 
-    const padded = new Float32Array(len + 2 * N);
-    padded.set(x, N);
-    const frames = Math.floor((padded.length - N) / hop) + 1;
+    // الإشارة "مُحشوّة" افتراضياً بـ N أصفار من الطرفين دون نسخها (توفير ذاكرة)
+    const paddedLen = len + 2 * N;
+    const at = (k) => { const t = k - N; return t >= 0 && t < len ? x[t] : 0; };
+    const frames = Math.floor((paddedLen - N) / hop) + 1;
 
     // --- المرحلة 1: طاقة كل إطار
     const energy = new Float64Array(frames);
     for (let f = 0; f < frames; f++) {
       const off = f * hop;
       let s = 0;
-      for (let i = 0; i < N; i++) { const v = padded[off + i] * win[i]; s += v * v; }
+      for (let i = 0; i < N; i++) { const v = at(off + i) * win[i]; s += v * v; }
       energy[f] = s / N;
     }
 
@@ -267,7 +290,7 @@
     const noise = new Float64Array(half + 1);
     for (const f of noiseFrames) {
       const off = f * hop;
-      for (let i = 0; i < N; i++) { re[i] = padded[off + i] * win[i]; im[i] = 0; }
+      for (let i = 0; i < N; i++) { re[i] = at(off + i) * win[i]; im[i] = 0; }
       fft.transform(re, im, false);
       for (let k = 0; k <= half; k++) noise[k] += re[k] * re[k] + im[k] * im[k];
     }
@@ -286,12 +309,12 @@
     const prevS2 = new Float64Array(half + 1);
     const G = new Float64Array(half + 1);
     const Gs = new Float64Array(half + 1);
-    const out = new Float64Array(padded.length);
+    const out = new Float32Array(paddedLen);
     const reportEvery = Math.max(1, Math.floor(frames / 50));
 
     for (let f = 0; f < frames; f++) {
       const off = f * hop;
-      for (let i = 0; i < N; i++) { re[i] = padded[off + i] * win[i]; im[i] = 0; }
+      for (let i = 0; i < N; i++) { re[i] = at(off + i) * win[i]; im[i] = 0; }
       fft.transform(re, im, false);
 
       for (let k = 0; k <= half; k++) {
@@ -318,12 +341,11 @@
       if (progress && f % reportEvery === 0) progress(f / frames);
     }
 
-    // مجموع مربعات نافذة Hann عند تداخل 75% = 1.5
-    const result = new Float32Array(len);
+    // مجموع مربعات نافذة Hann عند تداخل 75% = 1.5 — النسخ في المكان لتوفير الذاكرة
     const k = 1 / 1.5;
-    for (let i = 0; i < len; i++) result[i] = out[N + i] * k;
+    for (let i = 0; i < len; i++) out[i] = out[N + i] * k;
     if (progress) progress(1);
-    return result;
+    return out.subarray(0, len);
   }
 
   // ------------------------------------------------------------------
@@ -400,6 +422,126 @@
   }
 
   // ------------------------------------------------------------------
+  // قياس الجهارة (Loudness) وفق ITU-R BS.1770-4 / EBU R128
+  // ------------------------------------------------------------------
+  function kWeightingCoeffs(sr) {
+    // نفس صيغ libebur128 — تطابق معاملات ITU المنشورة عند 48kHz
+    let f0 = 1681.974450955533, G = 3.999843853973347, Q = 0.7071752369554196;
+    let K = Math.tan((Math.PI * f0) / sr);
+    const Vh = Math.pow(10, G / 20), Vb = Math.pow(Vh, 0.4996667741545416);
+    let a0 = 1 + K / Q + K * K;
+    const shelf = {
+      b0: (Vh + (Vb * K) / Q + K * K) / a0, b1: (2 * (K * K - Vh)) / a0, b2: (Vh - (Vb * K) / Q + K * K) / a0,
+      a1: (2 * (K * K - 1)) / a0, a2: (1 - K / Q + K * K) / a0,
+    };
+    f0 = 38.13547087602444; Q = 0.5003270373238773;
+    K = Math.tan((Math.PI * f0) / sr);
+    a0 = 1 + K / Q + K * K;
+    const hp = { b0: 1, b1: -2, b2: 1, a1: (2 * (K * K - 1)) / a0, a2: (1 - K / Q + K * K) / a0 };
+    return { shelf, hp };
+  }
+
+  /**
+   * الجهارة المتكاملة بوحدة LUFS.
+   * @param {boolean} [dualMono=true] قياس الملف الأحادي كما يُسمع عند تشغيله على
+   *   السماعتين (وهو ما تفعله برامج المونتاج) = +3.01dB.
+   */
+  function measureLoudness(x, sr, dualMono) {
+    const { shelf, hp } = kWeightingCoeffs(sr);
+    const block = Math.round(0.4 * sr), step = Math.round(0.1 * sr);
+    if (x.length < block) return -Infinity;
+    // مجموع المربعات لكل 100ms بعد K-weighting (بدون نسخ الإشارة)
+    const nSteps = Math.floor(x.length / step);
+    const stepSum = new Float64Array(nSteps);
+    let s1 = 0, s2 = 0, h1 = 0, h2 = 0;
+    for (let i = 0; i < nSteps * step; i++) {
+      const v = x[i];
+      let y = shelf.b0 * v + s1;
+      s1 = shelf.b1 * v - shelf.a1 * y + s2;
+      s2 = shelf.b2 * v - shelf.a2 * y;
+      const u = y;
+      y = hp.b0 * u + h1;
+      h1 = hp.b1 * u - hp.a1 * y + h2;
+      h2 = hp.b2 * u - hp.a2 * y;
+      stepSum[(i / step) | 0] += y * y;
+    }
+    const offset = -0.691 + (dualMono === false ? 0 : 10 * Math.log10(2));
+    const z = [];
+    for (let b = 0; b + 4 <= nSteps; b++) {
+      z.push((stepSum[b] + stepSum[b + 1] + stepSum[b + 2] + stepSum[b + 3]) / (4 * step));
+    }
+    const L = (ms) => offset + 10 * Math.log10(ms);
+    const abs = z.filter((v) => v > 0 && L(v) > -70);
+    if (!abs.length) return -Infinity;
+    const rel = L(abs.reduce((a, b) => a + b, 0) / abs.length) - 10;
+    const gated = abs.filter((v) => L(v) > rel);
+    return L(gated.reduce((a, b) => a + b, 0) / gated.length);
+  }
+
+  /**
+   * محدِّد قمم (Limiter) بنظرة استباقية 5ms: لا تتجاوز أي عيّنة ceilingDb،
+   * مع انتقالات ناعمة دون تقطيع. يعمل بتمريرة واحدة وذاكرة إضافية صغيرة جداً.
+   *
+   *   m[i] = أصغر كسب مطلوب في النافذة [i, i+L)      (طابور رتيب)
+   *   s[i] = متوسط m في [i-L+1, i]                   (≤ الكسب المطلوب عند كل قمة)
+   *   r[i] = s[i] عند الهبوط، وصعود ناعم (release) عند الارتفاع
+   */
+  function limiter(x, sr, ceilingDb) {
+    const c = dbToGain(ceilingDb == null ? -1 : ceilingDb);
+    const n = x.length;
+    let peak = 0;
+    for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(x[i]));
+    if (peak <= c) return x;
+    const L = Math.max(1, Math.round(0.005 * sr));
+    const R = L + 1;                         // حجم الحلقات الدائرية
+    const qIdx = new Int32Array(R), qVal = new Float32Array(R);
+    let qh = 0, qt = 0, qn = 0;              // طابور رتيب دائري
+    const mRing = new Float32Array(L).fill(1);
+    let sum = L;                             // ما قبل البداية يُعامل ككسب = 1
+    const rel = Math.exp(-1 / (0.08 * sr));
+    let r = 1;
+    for (let j = 0; j < n + L - 1; j++) {
+      if (j < n) {
+        const a = Math.abs(x[j]);
+        const g = a > c ? c / a : 1;
+        while (qn > 0 && qVal[(qt - 1 + R) % R] >= g) { qt = (qt - 1 + R) % R; qn--; }
+        qIdx[qt] = j; qVal[qt] = g; qt = (qt + 1) % R; qn++;
+      }
+      const i = j - L + 1;
+      if (i < 0) continue;
+      while (qIdx[qh] < i) { qh = (qh + 1) % R; qn--; }
+      const m = qVal[qh];
+      const slot = i % L;
+      sum += m - mRing[slot];
+      mRing[slot] = m;
+      const avg = sum / L;
+      r = avg < r ? avg : avg + (r - avg) * rel;
+      x[i] *= r;
+    }
+    return x;
+  }
+
+  /** ضبط الجهارة على هدف بوحدة LUFS مع منع تجاوز القمم. */
+  function normalizeLoudness(x, sr, targetLufs, ceilingDb) {
+    const before = measureLoudness(x, sr);
+    if (!Number.isFinite(before)) return { before, gainDb: 0 };
+    const ceil = ceilingDb == null ? -1 : ceilingDb;
+    let gainDb = clamp(targetLufs - before, -40, 40);
+    let g = dbToGain(gainDb);
+    for (let i = 0; i < x.length; i++) x[i] *= g;
+    limiter(x, sr, ceil);
+    // تمريرة تصحيح: المحدِّد يخفض الجهارة قليلاً، فنعوّض الفرق (حتى 3dB) مرة واحدة
+    const miss = targetLufs - measureLoudness(x, sr);
+    if (Math.abs(miss) > 0.1 && Math.abs(miss) < 3) {
+      g = dbToGain(miss);
+      for (let i = 0; i < x.length; i++) x[i] *= g;
+      limiter(x, sr, ceil);
+      gainDb += miss;
+    }
+    return { before, gainDb };
+  }
+
+  // ------------------------------------------------------------------
   // إعادة التشكيل (Resampling) — Windowed-sinc بجدول معامِلات مسبق الحساب
   // ------------------------------------------------------------------
   const resampleTables = new Map();
@@ -470,12 +612,15 @@
     const len = x.length;
     if (len === 0) return { samples: new Float32Array(0), vad: new Float32Array(0) };
 
-    const x48 = resample(x, sr, RNN_SR);
+    const x48 = sr === RNN_SR ? x : resample(x, sr, RNN_SR);
     report(0.15);
     const n = x48.length;
     const total = n + RNN_DELAY;
     const frames = Math.ceil(total / RNN_FRAME);
-    const wet = new Float32Array(frames * RNN_FRAME);
+    const dry = dbToGain(-(6 + 34 * strength)); // نسبة الصوت الأصلي الممزوجة (لطبيعية الصوت)
+    // عند 48kHz مع inPlace يُكتب الناتج فوق الدخل نفسه: كل عيّنة تُقرأ قبل أن تُستبدل
+    // (الكتابة عند t = k - 480 بينما القراءة دائماً عند k ≥ t)
+    const y48 = (sr === RNN_SR && opts.inPlace) ? x : new Float32Array(n);
     const vad = new Float32Array(frames);
 
     const st = mod._rnnoise_create(0);
@@ -493,7 +638,11 @@
         }
         vad[f] = mod._rnnoise_process_frame(st, outPtr, inPtr);
         const h2 = mod.HEAPF32;
-        for (let i = 0; i < RNN_FRAME; i++) wet[off + i] = h2[ob + i] / SCALE;
+        // تعويض التأخير أثناء الكتابة مباشرة: عيّنة الخرج k تقابل عيّنة الدخل k - RNN_DELAY
+        for (let i = 0; i < RNN_FRAME; i++) {
+          const t = off + i - RNN_DELAY;
+          if (t >= 0 && t < n) y48[t] = (1 - dry) * (h2[ob + i] / SCALE) + dry * x48[t];
+        }
         if (f % reportEvery === 0) report(0.15 + 0.7 * (f / frames));
       }
     } finally {
@@ -502,13 +651,8 @@
       mod._free(outPtr);
     }
 
-    // تعويض التأخير + مزج نسبة صغيرة من الأصل حسب الشدة (لصوت أكثر طبيعية)
-    const dry = dbToGain(-(6 + 34 * strength));
-    const y48 = new Float32Array(n);
-    for (let i = 0; i < n; i++) y48[i] = (1 - dry) * wet[i + RNN_DELAY] + dry * x48[i];
-
     report(0.9);
-    let y = resample(y48, RNN_SR, sr);
+    let y = sr === RNN_SR ? y48 : resample(y48, RNN_SR, sr);
     if (y.length !== len) { const t = new Float32Array(len); t.set(y.subarray(0, len)); y = t; }
     report(1);
     return { samples: y, vad };
@@ -530,14 +674,16 @@
     gate: true,
     eq: true,
     compress: false,
-    normalize: true,
+    normalize: true,       // تطبيع القمة إلى -1dBFS (يُستخدم عندما loudness = null)
+    loudness: null,        // هدف الجهارة LUFS (مثل -16)؛ يتقدم على normalize
+    inPlace: false,        // معالجة المصفوفة المُدخلة مباشرة لتوفير الذاكرة
   };
 
   function processVoice(input, sr, options, progress) {
     const o = Object.assign({}, DEFAULTS, options || {});
     const report = progress || function () {};
     const before = levelStats(input, sr);
-    let x = Float32Array.from(input);
+    let x = o.inPlace ? input : Float32Array.from(input);
 
     report(0.02, 'highpass');
     if (o.highpass) highpass(x, sr, o.highpassFreq);
@@ -566,9 +712,12 @@
     if (o.eq) voiceEQ(x, sr);
     report(0.95, 'compress');
     if (o.compress) compressor(x, sr);
-    if (o.normalize) normalize(x, -1);
+    report(0.97, 'level');
+    if (o.loudness != null && Number.isFinite(o.loudness)) normalizeLoudness(x, sr, o.loudness, -1);
+    else if (o.normalize) normalize(x, -1);
 
     const after = levelStats(x, sr);
+    after.lufs = measureLoudness(x, sr);
     report(1, 'done');
     return { samples: x, stats: { before, after, engine: engineUsed } };
   }
@@ -577,7 +726,12 @@
     DEFAULTS,
     FFT,
     toMono,
+    smartMono,
     levelStats,
+    measureLoudness,
+    kWeightingCoeffs,
+    limiter,
+    normalizeLoudness,
     biquadCoeffs,
     applyBiquad,
     highpass,
