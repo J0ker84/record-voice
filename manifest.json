@@ -1,0 +1,15 @@
+{
+  "name": "صوت نقي — تسجيل وتنقية الصوت",
+  "short_name": "صوت نقي",
+  "description": "سجّل صوتك ونقّه من الضوضاء والطنين مباشرة على جهازك",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f3f6f6",
+  "theme_color": "#0f766e",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
