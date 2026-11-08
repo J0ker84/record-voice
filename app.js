@@ -537,7 +537,7 @@
       ['تصحيح النبرة', st.toneMaxDb > 0.5 ? '+' + st.toneMaxDb.toFixed(0) + ' dB' : 'لم يلزم', st.toneMaxDb > 0.5 ? 'good' : '',
         st.toneMaxDb > 0.5 ? 'أقصى تعزيز للترددات العالية' : 'النبرة سليمة'],
       ['درجة صوتك', st.pitch ? Math.round(st.pitch) + ' Hz' : '—', '', st.highpassHz ? `الفلتر المنخفض عند ${st.highpassHz} Hz` : ''],
-      ['الطنين الكهربائي', st.humHz ? `أُزيل (${st.humHz} Hz)` : 'لا يوجد', st.humHz ? 'good' : '', st.humHz ? 'مع توافقياته' : ''],
+      ['الطنين الكهربائي', st.humHz ? `أُزيل (${st.humHz} Hz)` : 'لا يوجد', st.humHz ? 'good' : '', st.humHz ? 'هل كان الهاتف على الشاحن؟' : ''],
       ['الطريقة المستخدمة', ENGINE_NAMES[st.engine] || '—', 'method', ''],
     ];
     els.stats.innerHTML = items.map(([label, value, cls, note]) =>
