@@ -350,3 +350,29 @@ test('تقدير درجة الصوت والفلتر المنخفض المتكي�
   const rd = DSP.processVoice(deep, SR, { denoise: false });
   assert.ok(rd.stats.highpassHz < 70, 'hp=' + rd.stats.highpassHz);
 });
+
+// ------------------------------------------------------------------
+// البوابة المعتمدة على كاشف الكلام (VAD)
+// ------------------------------------------------------------------
+test('بوابة VAD: تُبقي الكلام، تخفض غير الكلام 20dB، وتفتح قبل بداية الكلام', () => {
+  const sr = 48000;
+  const vad = new Float32Array(300); // 3 ثوانٍ: صمت 1s، كلام 1s، صمت 1s
+  for (let f = 100; f < 200; f++) vad[f] = 0.95;
+  const g = new Float32Array(sr * 3).fill(1);
+  DSP.vadGate(g, sr, vad);
+  const db = (i) => DSP.gainToDb(g[i]);
+  assert.ok(db(Math.round(0.8 * sr)) < -19, 'الصمت الأول لم يُخفض');
+  assert.ok(db(Math.round(1.5 * sr)) > -0.1, 'الكلام تأثر');
+  assert.ok(db(Math.round(0.975 * sr)) > -1, 'لم تُفتح البوابة قبل بداية الكلام (حماية الحروف الأولى)');
+  assert.ok(db(Math.round(2.1 * sr)) > -1, 'أُغلقت البوابة مبكراً بعد نهاية الكلام');
+  assert.ok(db(Math.round(2.9 * sr)) < -19, 'الصمت الأخير لم يُخفض');
+});
+
+test('مع الذكاء الاصطناعي تُستخدم بوابة VAD، وبدونه بوابة المستوى', async () => {
+  const mod = await loadRNNoise();
+  const { x: clean } = makeSpeech(4);
+  const noisy = addNoise(clean, -45, -90, 31);
+  assert.strictEqual(DSP.processVoice(noisy, SR, { engine: 'hybrid', rnnoise: mod }).stats.gate, 'vad');
+  assert.strictEqual(DSP.processVoice(noisy, SR, { engine: 'spectral' }).stats.gate, 'level');
+  assert.strictEqual(DSP.processVoice(noisy, SR, { engine: 'hybrid', rnnoise: mod, gate: false }).stats.gate, null);
+});

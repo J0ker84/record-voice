@@ -367,8 +367,9 @@
     const st = levelStats(x, sr);
     let thrDb = opts.thresholdDb;
     if (thrDb == null) {
-      // فوق مستوى الضوضاء بـ 6dB، لكن ليس أعلى من (مستوى الكلام - 18dB)
-      thrDb = Math.min(st.noiseDb + 6, st.speechDb - 18);
+      // فوق مستوى الضوضاء بـ 6dB — لكن ليس أخفض من (الكلام − 32dB)، لأن الضوضاء المتغيرة
+      // تجعل أهدأ اللحظات أخفض بكثير من الضوضاء الفعلية — وليس أعلى من (الكلام − 15dB)
+      thrDb = Math.min(Math.max(st.noiseDb + 6, st.speechDb - 32), st.speechDb - 15);
     }
     const ratio = opts.ratio || 3;
     const rangeDb = opts.rangeDb || -30;
@@ -391,6 +392,43 @@
         hold = holdSamples;
       }
       const target = dbToGain(targetDb);
+      g = target > g ? gOpen * g + (1 - gOpen) * target : gClose * g + (1 - gClose) * target;
+      x[i] *= g;
+    }
+    return x;
+  }
+
+  // ------------------------------------------------------------------
+  // بوابة يقودها كاشف الكلام في RNNoise (VAD) — لا تعتمد على مستوى الضوضاء
+  // ------------------------------------------------------------------
+  /**
+   * @param {Float32Array} vad احتمال وجود كلام لكل 10ms (من rnnoiseDenoise)
+   * @param {object} [opts] rangeDb: مقدار الخفض في غير الكلام (افتراضي −20dB)
+   */
+  function vadGate(x, sr, vad, opts) {
+    opts = opts || {};
+    const rangeG = dbToGain(opts.rangeDb == null ? -20 : opts.rangeDb);
+    const nf = vad.length;
+    // 1) حالة الكلام لكل إطار مع تخلّف (hysteresis) وتمديد 150ms بعد آخر كلام
+    const on = new Uint8Array(nf);
+    let state = 0, quiet = 0;
+    for (let f = 0; f < nf; f++) {
+      if (vad[f] >= 0.5) { state = 1; quiet = 0; }
+      else if (state && vad[f] < 0.25 && ++quiet > 15) state = 0;
+      on[f] = state;
+    }
+    // 2) فتح مبكر 40ms قبل بداية الكلام (حتى لا تُقص الحروف الأولى)
+    const open = new Uint8Array(nf);
+    for (let f = 0; f < nf; f++) {
+      for (let k = 0; k <= 4 && f + k < nf; k++) if (on[f + k]) { open[f] = 1; break; }
+    }
+    // 3) تطبيق ناعم على العينات: فتح سريع (5ms) وإغلاق بطيء (80ms)
+    const gOpen = Math.exp(-1 / (0.005 * sr)), gClose = Math.exp(-1 / (0.08 * sr));
+    const spf = sr / 100;
+    let g = 1;
+    for (let i = 0; i < x.length; i++) {
+      const f = Math.min(nf - 1, Math.floor(i / spf));
+      const target = open[f] ? 1 : rangeG;
       g = target > g ? gOpen * g + (1 - gOpen) * target : gClose * g + (1 - gClose) * target;
       x[i] *= g;
     }
@@ -881,13 +919,16 @@
     }
 
     let engineUsed = 'none';
+    let vad = null; // احتمال الكلام لكل 10ms (متاح مع الذكاء الاصطناعي)
     if (o.denoise) {
       let engine = o.engine;
       if ((engine === 'ai' || engine === 'hybrid') && !o.rnnoise) engine = 'spectral'; // النموذج غير متاح
       if (engine === 'ai' || engine === 'hybrid') {
         const span = engine === 'hybrid' ? 0.6 : 0.8;
         const own = Object.assign({}, o, { inPlace: true }); // x مملوكة لهذه الدالة
-        x = rnnoiseDenoise(x, sr, o.rnnoise, own, (p) => report(0.05 + p * span, 'ai')).samples;
+        const rr = rnnoiseDenoise(x, sr, o.rnnoise, own, (p) => report(0.05 + p * span, 'ai'));
+        x = rr.samples;
+        vad = rr.vad;
         if (engine === 'hybrid') {
           // تمريرة طيفية خفيفة لإزالة بقايا الضوضاء الثابتة بعد النموذج
           const so = Object.assign({}, o, { strength: o.strength * 0.5, noiseProfile: 'auto', inPlace: true });
@@ -898,12 +939,17 @@
       }
       engineUsed = engine;
     }
-    report(0.87, 'gate');
-    if (o.gate) noiseGate(x, sr);
     report(0.91, 'eq');
     if (o.eq) voiceEQ(x, sr, !toneApplied);
     report(0.95, 'compress');
     if (o.compress) compressor(x, sr);
+    // البوابة بعد الضاغط: الضاغط يرفع الأجزاء الهادئة نسبياً، والبوابة تعيد خفضها
+    report(0.96, 'gate');
+    let gateMode = null;
+    if (o.gate) {
+      if (vad && vad.length) { vadGate(x, sr, vad); gateMode = 'vad'; }
+      else { noiseGate(x, sr); gateMode = 'level'; }
+    }
     report(0.97, 'level');
     if (o.loudness != null && Number.isFinite(o.loudness)) normalizeLoudness(x, sr, o.loudness, -1);
     else if (o.normalize) normalize(x, -1);
@@ -914,7 +960,7 @@
     const toneMax = tone ? Math.max(...tone.points.map((pt) => pt[1])) : 0;
     return {
       samples: x,
-      stats: { before, after, engine: engineUsed, pitch: pitch && pitch.median, highpassHz: o.highpass ? hpFreq : null, toneMaxDb: toneMax },
+      stats: { before, after, engine: engineUsed, gate: gateMode, pitch: pitch && pitch.median, highpassHz: o.highpass ? hpFreq : null, toneMaxDb: toneMax },
     };
   }
 
@@ -943,6 +989,7 @@
     rnnoiseDenoise,
     RNN_SR,
     noiseGate,
+    vadGate,
     compressor,
     normalize,
     processVoice,
