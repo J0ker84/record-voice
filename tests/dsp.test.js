@@ -101,7 +101,7 @@ test('إزالة الضوضاء تخفض الضوضاء بوضوح وتحسن SN
   const noisy = addNoise(clean, -32, -30, 7);
 
   const out = DSP.processVoice(noisy, SR, {
-    hum: 50, eq: false, compress: false, normalize: false, gate: true, strength: 0.7, tone: 0, highpassFreq: 80,
+    hum: 50, eq: false, compress: false, normalize: false, gate: true, strength: 0.7, tone: 0, highpassFreq: 80, dereverb: 0,
   }).samples;
 
   // المرجع يمر بنفس الفلاتر الخطية (تمرير عالٍ + Notch) حتى تكون المقارنة عادلة من ناحية الطور
@@ -204,7 +204,7 @@ test('RNNoise يتفوق على الطريقة الطيفية مع الضوضا�
   const k = Math.sqrt(ec / en) / DSP.dbToGain(5); // SNR = 5 dB
   const noisy = clean.map((v, i) => v + nz[i] * k);
 
-  const base = { highpass: false, gate: false, eq: false, normalize: false, tone: 0, strength: 0.6, rnnoise: mod };
+  const base = { highpass: false, gate: false, eq: false, normalize: false, tone: 0, dereverb: 0, strength: 0.6, rnnoise: mod };
   const spectral = DSP.processVoice(noisy, SR, Object.assign({}, base, { engine: 'spectral' }));
   const ai = DSP.processVoice(noisy, SR, Object.assign({}, base, { engine: 'ai' }));
   const hybrid = DSP.processVoice(noisy, SR, Object.assign({}, base, { engine: 'hybrid' }));
@@ -375,4 +375,50 @@ test('مع الذكاء الاصطناعي تُستخدم بوابة VAD، وب�
   assert.strictEqual(DSP.processVoice(noisy, SR, { engine: 'hybrid', rnnoise: mod }).stats.gate, 'vad');
   assert.strictEqual(DSP.processVoice(noisy, SR, { engine: 'spectral' }).stats.gate, 'level');
   assert.strictEqual(DSP.processVoice(noisy, SR, { engine: 'hybrid', rnnoise: mod, gate: false }).stats.gate, null);
+});
+
+// ------------------------------------------------------------------
+// تخفيف صدى الغرفة
+// ------------------------------------------------------------------
+function fftConv(x, h) {
+  let N = 1; while (N < h.length * 2) N <<= 1; N = Math.max(N, 65536);
+  const B = N - h.length + 1, fft = new DSP.FFT(N);
+  const Hr = new Float64Array(N), Hi = new Float64Array(N); Hr.set(h); fft.transform(Hr, Hi, false);
+  const y = new Float32Array(x.length), re = new Float64Array(N), im = new Float64Array(N);
+  for (let o = 0; o < x.length; o += B) {
+    re.fill(0); im.fill(0);
+    for (let i = 0; i < B && o + i < x.length; i++) re[i] = x[o + i];
+    fft.transform(re, im, false);
+    for (let k = 0; k < N; k++) { const a = re[k] * Hr[k] - im[k] * Hi[k], b = re[k] * Hi[k] + im[k] * Hr[k]; re[k] = a; im[k] = b; }
+    fft.transform(re, im, true);
+    for (let i = 0; i < N && o + i < y.length; i++) y[o + i] += re[i];
+  }
+  return y;
+}
+
+test('تخفيف الصدى يخفض ذيل الصدى بعد الكلام دون تغيير جسم الكلام', () => {
+  const r = rng(12);
+  const dry = broadbandSpeechLike(6, 5); // مقاطع 0.45s يليها صمت 0.25s
+  // استجابة غرفة: صوت مباشر + ذيل أسّي (RT60 = 0.6s) أضعف منه بـ 4dB
+  const n = Math.round(SR * 0.8), h = new Float64Array(n); h[0] = 1;
+  let e = 0; const tail = new Float64Array(n);
+  for (let i = Math.round(0.005 * SR); i < n; i++) { tail[i] = gauss(r) * Math.exp((-6.9078 * (i / SR)) / 0.6); e += tail[i] ** 2; }
+  const k = Math.sqrt(Math.pow(10, -0.4) / e); for (let i = 0; i < n; i++) h[i] += tail[i] * k;
+  const wet = fftConv(dry, h);
+  const out = DSP.dereverb(wet, SR, { strength: 0.5 });
+  // الذيل: 60–220ms بعد نهاية كل مقطع؛ الجسم: منتصف المقطع
+  const lvl = (y, a, b) => { let s = 0, c = 0; for (let t = 0.7; t < 5.5; t += 0.7) { for (let i = Math.round((t + a) * SR); i < Math.round((t + b) * SR); i++) { s += y[i] ** 2; c++; } } return 10 * Math.log10(s / c); };
+  const tailIn = lvl(wet, 0.51, 0.67) - lvl(wet, 0.1, 0.35), tailOut = lvl(out, 0.51, 0.67) - lvl(out, 0.1, 0.35);
+  const bodyChange = lvl(out, 0.1, 0.35) - lvl(wet, 0.1, 0.35);
+  console.log(`ذيل الصدى نسبةً للكلام: ${tailIn.toFixed(1)} dB → ${tailOut.toFixed(1)} dB | تغيّر جسم الكلام ${bodyChange.toFixed(1)} dB`);
+  assert.ok(tailOut < tailIn - 3, 'الذيل لم ينخفض بما يكفي');
+  assert.ok(Math.abs(bodyChange) < 1.5, 'جسم الكلام تغيّر كثيراً');
+});
+
+test('تخفيف الصدى: الشدة صفر لا تغيّر شيئاً، والمعالجة في المكان مطابقة', () => {
+  const x = broadbandSpeechLike(2, 6);
+  assert.deepStrictEqual(DSP.dereverb(x, SR, { strength: 0 }), x);
+  const a = DSP.dereverb(x, SR, { strength: 0.5 });
+  const b = DSP.dereverb(Float32Array.from(x), SR, { strength: 0.5, inPlace: true });
+  for (let i = 0; i < a.length; i++) assert.ok(Math.abs(a[i] - b[i]) < 1e-6);
 });

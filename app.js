@@ -9,7 +9,7 @@
     browserNs: $('#browserNs'), strength: $('#strength'), strengthOut: $('#strengthOut'),
     noiseProfile: $('#noiseProfile'), hum: $('#hum'), optHighpass: $('#optHighpass'),
     optGate: $('#optGate'), optEq: $('#optEq'), optCompress: $('#optCompress'),
-    loudness: $('#loudness'), tone: $('#tone'), processBtn: $('#processBtn'), shareProc: $('#shareProc'),
+    loudness: $('#loudness'), tone: $('#tone'), dereverb: $('#dereverb'), processBtn: $('#processBtn'), shareProc: $('#shareProc'),
     fileStatus: $('#fileStatus'), resetSettings: $('#resetSettings'),
     progressWrap: $('#progressWrap'), stageText: $('#stageText'), progressFill: $('#progressFill'), progressText: $('#progressText'),
     origCanvas: $('#origCanvas'), procCanvas: $('#procCanvas'), origAudio: $('#origAudio'),
@@ -347,7 +347,7 @@
 
   // حفظ الإعدادات المفضلة على هذا الجهاز
   const SETTINGS_KEY = 'sawt-naqi-settings-v1';
-  const settingControls = ['strength', 'tone', 'noiseProfile', 'hum', 'loudness', 'optHighpass', 'optGate', 'optEq', 'optCompress'];
+  const settingControls = ['strength', 'tone', 'dereverb', 'noiseProfile', 'hum', 'loudness', 'optHighpass', 'optGate', 'optEq', 'optCompress'];
   const defaultSettings = {};
   function snapshotSettings() {
     const o = { engine: selectedEngine() };
@@ -379,6 +379,7 @@
     'load-model': 'تحميل نموذج الذكاء الاصطناعي…',
     analyze: 'تحليل صوتك…',
     tone: 'تصحيح النبرة…',
+    dereverb: 'تخفيف صدى الغرفة…',
     highpass: 'إزالة الهمهمة…',
     ai: 'الشبكة العصبية تعزل الكلام عن الضوضاء…',
     denoise: 'التنقية الطيفية…',
@@ -415,6 +416,7 @@
       strength: s,
       engine: selectedEngine(),
       tone: Number(els.tone.value),
+      dereverb: Number(els.dereverb.value),
       noiseProfile: els.noiseProfile.value,
       noiseSeconds: 1,
       hum: Number(els.hum.value),

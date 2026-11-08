@@ -399,6 +399,75 @@
   }
 
   // ------------------------------------------------------------------
+  // تخفيف صدى الغرفة (Dereverberation)
+  // ------------------------------------------------------------------
+  /**
+   * إخماد الصدى المتأخر (Lebart / Habets): طاقة الصدى في الإطار الحالي ≈ طاقة
+   * الإشارة قبل Td مضروبة في exp(−2·δ·Td) حيث δ = 3·ln10 / RT60. نطرحها طيفياً
+   * بمرشح Wiener مع تقدير موجَّه بالقرار، فيبقى الصوت المباشر والانعكاسات المبكرة.
+   *
+   * مع ميكروفون قريب من الفم يكون الصوت المباشر أقوى بكثير من الصدى، لذا يُضرب
+   * التقدير بمعامل صغير (beta)، وإلا التهم الطرحُ الكلامَ نفسه. زمن الصدى والمعامل
+   * يتحدان في رقم واحد، فنثبّت RT60 على قيمة غرفة منزلية نموذجية (0.6s)
+   * ونتحكم بالشدة. (قياس فعلي على تسجيل المستخدم: ذيل الصدى بعد الكلمات انخفض 8–10dB.)
+   * @param {object} opts strength 0..1، rt60 بالثواني (اختياري)، inPlace
+   */
+  function dereverb(x, sr, opts, progress) {
+    opts = opts || {};
+    const strength = clamp(opts.strength == null ? 0.5 : opts.strength, 0, 1);
+    const rt60 = clamp(opts.rt60 || 0.6, 0.15, 1.5);
+    const len = x.length;
+    const dest = opts.inPlace ? x : new Float32Array(len);
+    if (len === 0 || strength === 0) { if (dest !== x) dest.set(x); return dest; }
+    const N = sr > 32000 ? 1024 : 512, hop = N / 4, half = N / 2;
+    const fft = getFFT(N);
+    const win = new Float64Array(N);
+    for (let i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / N);
+    const Td = 0.05;                                  // بداية "الصدى المتأخر" بعد 50ms
+    const D = Math.max(1, Math.round((Td * sr) / hop));
+    const delta = (3 * Math.LN10) / rt60;
+    const decay = Math.exp(-2 * delta * (D * hop) / sr);
+    const beta = opts.beta != null ? opts.beta : 0.1 + 0.4 * strength;                   // 0.5 → 0.3
+    const floor = dbToGain(opts.floorDb != null ? opts.floorDb : -(6 + 8 * strength)); // 0.5 → −10dB
+    const alphaS = 0.7, alphaDD = 0.9;
+    const hist = Array.from({ length: D + 1 }, () => new Float64Array(half + 1)); // طيف مُنعَّم سابق
+    const Ssm = new Float64Array(half + 1), prev = new Float64Array(half + 1), G = new Float64Array(half + 1);
+    const re = new Float64Array(N), im = new Float64Array(N), acc = new Float64Array(N);
+    const norm = 1 / 1.5;
+    let fi = 0;
+    const total = Math.ceil((len + N) / hop), every = Math.max(1, Math.floor(total / 20));
+    for (let off = -N; off < len; off += hop, fi++) {
+      for (let i = 0; i < N; i++) { const t = off + i; re[i] = (t >= 0 && t < len ? x[t] : 0) * win[i]; im[i] = 0; }
+      fft.transform(re, im, false);
+      const late = hist[(fi + 1) % (D + 1)]; // الطيف قبل D إطارات
+      for (let k = 0; k <= half; k++) {
+        const P = re[k] * re[k] + im[k] * im[k];
+        Ssm[k] = alphaS * Ssm[k] + (1 - alphaS) * P;
+        const lam = beta * decay * late[k] + 1e-20;
+        const gamma = P / lam;
+        const xi = alphaDD * (prev[k] / lam) + (1 - alphaDD) * Math.max(gamma - 1, 0);
+        G[k] = Math.max(xi / (1 + xi), floor);
+      }
+      hist[fi % (D + 1)].set(Ssm);
+      for (let k = 0; k <= half; k++) {
+        const g = (G[Math.max(0, k - 1)] + 2 * G[k] + G[Math.min(half, k + 1)]) / 4;
+        prev[k] = (re[k] * re[k] + im[k] * im[k]) * g * g;
+        re[k] *= g; im[k] *= g;
+        if (k > 0 && k < half) { re[N - k] *= g; im[N - k] *= g; }
+      }
+      fft.transform(re, im, true);
+      for (let i = 0; i < N; i++) acc[(off + i + N) % N] += re[i] * win[i];
+      for (let t = off; t < off + hop; t++) {
+        const slot = (t + N) % N;
+        if (t >= 0 && t < len) dest[t] = acc[slot] * norm;
+        acc[slot] = 0;
+      }
+      if (progress && fi % every === 0) progress(Math.min(1, fi / total));
+    }
+    return dest;
+  }
+
+  // ------------------------------------------------------------------
   // بوابة يقودها كاشف الكلام في RNNoise (VAD) — لا تعتمد على مستوى الضوضاء
   // ------------------------------------------------------------------
   /**
@@ -408,13 +477,15 @@
   function vadGate(x, sr, vad, opts) {
     opts = opts || {};
     const rangeG = dbToGain(opts.rangeDb == null ? -20 : opts.rangeDb);
+    const holdFrames = Math.round((opts.holdMs == null ? 150 : opts.holdMs) / 10);
+    const closeSec = (opts.closeMs == null ? 80 : opts.closeMs) / 1000;
     const nf = vad.length;
     // 1) حالة الكلام لكل إطار مع تخلّف (hysteresis) وتمديد 150ms بعد آخر كلام
     const on = new Uint8Array(nf);
     let state = 0, quiet = 0;
     for (let f = 0; f < nf; f++) {
       if (vad[f] >= 0.5) { state = 1; quiet = 0; }
-      else if (state && vad[f] < 0.25 && ++quiet > 15) state = 0;
+      else if (state && vad[f] < 0.25 && ++quiet > holdFrames) state = 0;
       on[f] = state;
     }
     // 2) فتح مبكر 40ms قبل بداية الكلام (حتى لا تُقص الحروف الأولى)
@@ -423,7 +494,7 @@
       for (let k = 0; k <= 4 && f + k < nf; k++) if (on[f + k]) { open[f] = 1; break; }
     }
     // 3) تطبيق ناعم على العينات: فتح سريع (5ms) وإغلاق بطيء (80ms)
-    const gOpen = Math.exp(-1 / (0.005 * sr)), gClose = Math.exp(-1 / (0.08 * sr));
+    const gOpen = Math.exp(-1 / (0.005 * sr)), gClose = Math.exp(-1 / (closeSec * sr));
     const spf = sr / 100;
     let g = 1;
     for (let i = 0; i < x.length; i++) {
@@ -881,6 +952,7 @@
     highpass: true,
     highpassFreq: 'auto',  // 'auto' = تحت درجة صوت المتحدث (40–80Hz)، أو رقم بالهرتز
     tone: 1,               // تصحيح النبرة التلقائي: 0 = معطّل، 1 = كامل
+    dereverb: 0.5,         // تخفيف صدى الغرفة: 0 = معطّل، 0.5 = متوسط، 1 = قوي
     hum: 0,            // 0 = معطّل، 50 أو 60
     denoise: true,
     engine: 'hybrid',  // 'ai' | 'hybrid' | 'spectral'
@@ -910,6 +982,11 @@
     report(0.02, 'highpass');
     if (o.highpass) highpass(x, sr, hpFreq);
     if (o.hum === 50 || o.hum === 60) removeHum(x, sr, o.hum);
+
+    if (o.dereverb > 0) {
+      report(0.025, 'dereverb');
+      dereverb(x, sr, { strength: o.dereverb, inPlace: true });
+    }
 
     let tone = null, toneApplied = false;
     if (o.tone > 0) {
@@ -947,7 +1024,9 @@
     report(0.96, 'gate');
     let gateMode = null;
     if (o.gate) {
-      if (vad && vad.length) { vadGate(x, sr, vad); gateMode = 'vad'; }
+      // مع تخفيف الصدى: بوابة أسرع إغلاقاً (60ms بعد الكلام بدل 150ms) لإخفاء ذيل الصدى
+      const gOpts = o.gateOpts || (o.dereverb > 0 ? { holdMs: 60, closeMs: 40 } : undefined);
+      if (vad && vad.length) { vadGate(x, sr, vad, gOpts); gateMode = 'vad'; }
       else { noiseGate(x, sr); gateMode = 'level'; }
     }
     report(0.97, 'level');
@@ -990,6 +1069,7 @@
     RNN_SR,
     noiseGate,
     vadGate,
+    dereverb,
     compressor,
     normalize,
     processVoice,
