@@ -309,7 +309,11 @@
     const prevS2 = new Float64Array(half + 1);
     const G = new Float64Array(half + 1);
     const Gs = new Float64Array(half + 1);
-    const out = new Float32Array(paddedLen);
+    // تراكب-جمع بحلقة دائرية بطول N: كل موضع يُكتب نهائياً فور اكتمال الإطارات التي تغطيه.
+    // مع inPlace تُكتب النتيجة فوق الدخل (القراءة دائماً من مواضع لم تُكتب بعد).
+    const dest = opts.inPlace ? x : new Float32Array(len);
+    const acc = new Float64Array(N);
+    const norm = 1 / 1.5; // مجموع مربعات نافذة Hann عند تداخل 75%
     const reportEvery = Math.max(1, Math.floor(frames / 50));
 
     for (let f = 0; f < frames; f++) {
@@ -336,16 +340,18 @@
       }
 
       fft.transform(re, im, true);
-      for (let i = 0; i < N; i++) out[off + i] += re[i] * win[i];
+      for (let i = 0; i < N; i++) acc[(off + i) % N] += re[i] * win[i];
+      for (let q = off; q < off + hop; q++) {
+        const t = q - N, slot = q % N;
+        if (t >= 0 && t < len) dest[t] = acc[slot] * norm;
+        acc[slot] = 0;
+      }
 
       if (progress && f % reportEvery === 0) progress(f / frames);
     }
 
-    // مجموع مربعات نافذة Hann عند تداخل 75% = 1.5 — النسخ في المكان لتوفير الذاكرة
-    const k = 1 / 1.5;
-    for (let i = 0; i < len; i++) out[i] = out[N + i] * k;
     if (progress) progress(1);
-    return out.subarray(0, len);
+    return dest;
   }
 
   // ------------------------------------------------------------------
@@ -659,11 +665,179 @@
   }
 
   // ------------------------------------------------------------------
+  // تحليل الكلام: توزيع الترددات (LTAS) ودرجة الصوت (Pitch)
+  // ------------------------------------------------------------------
+  const TONE_BANDS = [400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500];
+
+  /**
+   * متوسط طيف الكلام على المدى الطويل بنطاقات ثلث أوكتاف، نسبةً إلى متوسط
+   * نطاقات 400–630Hz. يُحسب على أعلى 50% من المقاطع طاقةً (الكلام فقط).
+   * @returns {number[]|null} dB لكل تردد في TONE_BANDS، أو null إن لم يكفِ الكلام
+   */
+  function speechLTAS(x, sr) {
+    const N = 8192, hop = N / 2;
+    if (x.length < N * 4) return null;
+    const blocks = [];
+    for (let off = 0; off + N <= x.length; off += hop) {
+      let e = 0;
+      for (let i = off; i < off + N; i += 4) e += x[i] * x[i];
+      blocks.push([off, e]);
+    }
+    const sorted = blocks.map((b) => b[1]).sort((a, b) => a - b);
+    const thr = sorted[Math.floor(sorted.length * 0.5)];
+    let chosen = blocks.filter((b) => b[1] >= thr && b[1] > 0);
+    if (chosen.length < 4) return null;
+    // للتسجيلات الطويلة يكفي ~400 مقطع موزعة على الملف
+    if (chosen.length > 400) { const step = chosen.length / 400; chosen = Array.from({ length: 400 }, (_, i) => chosen[Math.floor(i * step)]); }
+    const fft = getFFT(N);
+    const re = new Float64Array(N), im = new Float64Array(N), P = new Float64Array(N / 2 + 1);
+    const win = new Float64Array(N);
+    for (let i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / N);
+    for (const [off] of chosen) {
+      for (let i = 0; i < N; i++) { re[i] = x[off + i] * win[i]; im[i] = 0; }
+      fft.transform(re, im, false);
+      for (let k = 0; k <= N / 2; k++) P[k] += re[k] * re[k] + im[k] * im[k];
+    }
+    const band = (fc) => {
+      const lo = fc / Math.pow(2, 1 / 6), hi = Math.min(fc * Math.pow(2, 1 / 6), sr * 0.49);
+      let s = 0;
+      for (let k = Math.ceil((lo * N) / sr); k <= Math.floor((hi * N) / sr); k++) s += P[k];
+      return 10 * Math.log10(s + 1e-30);
+    };
+    const lv = TONE_BANDS.map((fc) => (fc * Math.pow(2, -1 / 6) < sr * 0.49 ? band(fc) : NaN));
+    const ref = (lv[0] + lv[1] + lv[2]) / 3;
+    return lv.map((v) => v - ref);
+  }
+
+  /** تقدير درجة الصوت (F0) بالارتباط الذاتي على إشارة مخفّضة إلى 8kHz. */
+  function estimatePitch(x, sr) {
+    const dsr = 8000;
+    const y = resampleLight(x, sr, dsr);
+    const F = 512, minL = Math.round(dsr / 400), maxL = Math.round(dsr / 55);
+    const frames = [];
+    for (let off = 0; off + F + maxL <= y.length; off += F) {
+      let e = 0;
+      for (let i = off; i < off + F; i++) e += y[i] * y[i];
+      frames.push([off, e]);
+    }
+    if (!frames.length) return null;
+    const es = frames.map((f) => f[1]).sort((a, b) => a - b);
+    const thr = es[Math.floor(es.length * 0.6)];
+    let voiced = frames.filter((f) => f[1] >= thr && f[1] > 0);
+    if (voiced.length > 300) { const st = voiced.length / 300; voiced = Array.from({ length: 300 }, (_, i) => voiced[Math.floor(i * st)]); }
+    const f0s = [];
+    for (const [off] of voiced) {
+      let best = 0, bl = 0;
+      for (let L = minL; L <= maxL; L++) {
+        let c = 0, n1 = 0, n2 = 0;
+        for (let i = off; i < off + F; i++) { c += y[i] * y[i + L]; n1 += y[i] * y[i]; n2 += y[i + L] * y[i + L]; }
+        const r = c / Math.sqrt(n1 * n2 + 1e-20);
+        if (r > best) { best = r; bl = L; }
+      }
+      if (best > 0.6) f0s.push(dsr / bl);
+    }
+    if (f0s.length < 5) return null;
+    f0s.sort((a, b) => a - b);
+    return { median: f0s[Math.floor(f0s.length / 2)], p10: f0s[Math.floor(f0s.length * 0.1)], frames: f0s.length };
+  }
+
+  /** خفض معدل سريع (للتحليل فقط، لا للصوت المسموع) — دون نسخ الإشارة كاملة. */
+  function resampleLight(x, sr, to) {
+    if (sr <= to) return x;
+    const c = biquadCoeffs('lowpass', to * 0.45, sr, 0.7071);
+    const r = sr / to, n = Math.floor(x.length / r), out = new Float32Array(n);
+    let a1 = 0, a2 = 0, b1 = 0, b2 = 0, next = 0, j = 0;
+    for (let i = 0; i < x.length && j < n; i++) {
+      const v = x[i];
+      let y = c.b0 * v + a1; a1 = c.b1 * v - c.a1 * y + a2; a2 = c.b2 * v - c.a2 * y;
+      const u = y;
+      y = c.b0 * u + b1; b1 = c.b1 * u - c.a1 * y + b2; b2 = c.b2 * u - c.a2 * y;
+      if (i >= next) { out[j++] = y; next = Math.floor(j * r); }
+    }
+    return out;
+  }
+
+  // ------------------------------------------------------------------
+  // تصحيح النبرة التلقائي
+  // ------------------------------------------------------------------
+  /**
+   * النبرة المرجعية: توزيع ترددات صوت المستخدم نفسه كما التقطه ميكروفون
+   * الهاتف (تسجيل مرجعي 30 ثانية)، مُنعَّماً. القيم بالـ dB لكل نطاق في TONE_BANDS.
+   */
+  const TONE_TARGET_VALUES = [2, 0.4, -3.3, -7.4, -10.8, -13.1, -14.4, -15.8, -19.5, -20.7, -15, -11.1, -12.7, -15.9, -19.2, -20];
+
+  /**
+   * منحنى التصحيح = الهدف − المقاس، بعد التنعيم والحدود:
+   * لا تغيير تحت 800Hz، وتعزيز حتى +12dB، وتخفيض حتى −6dB.
+   * @returns {{points: Array<[number, number]>, measured: number[]}|null}
+   */
+  function toneCorrection(x, sr, amount, target) {
+    const tgt = target || TONE_TARGET_VALUES;
+    const m = speechLTAS(x, sr);
+    if (!m) return null;
+    const diff = TONE_BANDS.map((f, j) => (Number.isFinite(m[j]) ? tgt[j] - m[j] : 0));
+    const sm = diff.map((d, j) => (diff[Math.max(0, j - 1)] + 2 * d + diff[Math.min(diff.length - 1, j + 1)]) / 4);
+    const a = clamp(amount == null ? 1 : amount, 0, 1);
+    const points = TONE_BANDS.map((f, j) => {
+      let g = f < 800 ? 0 : f < 1000 ? sm[j] * 0.5 : sm[j];
+      g = clamp(g, -6, 12) * a;
+      return [f, g];
+    });
+    return { points, measured: m };
+  }
+
+  /** معادل بمنحنى حر (تداخل لوغاريتمي بين النقاط) — مرشح ثابت بطور صفري عبر STFT. */
+  function applyEqCurve(x, sr, points, inPlace) {
+    const N = 2048, hop = 512, len = x.length;
+    const fft = getFFT(N);
+    const g = new Float64Array(N / 2 + 1);
+    for (let k = 0; k <= N / 2; k++) {
+      const f = Math.max((k * sr) / N, 1);
+      let db;
+      if (f <= points[0][0]) db = points[0][1];
+      else if (f >= points[points.length - 1][0]) db = points[points.length - 1][1];
+      else {
+        for (let j = 0; j < points.length - 1; j++) {
+          if (f >= points[j][0] && f <= points[j + 1][0]) {
+            const t = Math.log(f / points[j][0]) / Math.log(points[j + 1][0] / points[j][0]);
+            db = points[j][1] + t * (points[j + 1][1] - points[j][1]);
+            break;
+          }
+        }
+      }
+      g[k] = dbToGain(db);
+    }
+    const win = new Float64Array(N);
+    for (let i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / N);
+    const dest = inPlace ? x : new Float32Array(len);
+    const acc = new Float64Array(N);
+    const norm = 1 / 1.5;
+    const re = new Float64Array(N), im = new Float64Array(N);
+    for (let off = -N; off < len; off += hop) {
+      for (let i = 0; i < N; i++) { const t = off + i; re[i] = (t >= 0 && t < len ? x[t] : 0) * win[i]; im[i] = 0; }
+      fft.transform(re, im, false);
+      for (let k = 0; k <= N / 2; k++) {
+        re[k] *= g[k]; im[k] *= g[k];
+        if (k > 0 && k < N / 2) { re[N - k] *= g[k]; im[N - k] *= g[k]; }
+      }
+      fft.transform(re, im, true);
+      for (let i = 0; i < N; i++) acc[(off + i + N) % N] += re[i] * win[i];
+      for (let t = off; t < off + hop; t++) {
+        const slot = (t + N) % N;
+        if (t >= 0 && t < len) dest[t] = acc[slot] * norm;
+        acc[slot] = 0;
+      }
+    }
+    return dest;
+  }
+
+  // ------------------------------------------------------------------
   // السلسلة الكاملة
   // ------------------------------------------------------------------
   const DEFAULTS = {
     highpass: true,
-    highpassFreq: 80,
+    highpassFreq: 'auto',  // 'auto' = تحت درجة صوت المتحدث (40–80Hz)، أو رقم بالهرتز
+    tone: 1,               // تصحيح النبرة التلقائي: 0 = معطّل، 1 = كامل
     hum: 0,            // 0 = معطّل، 50 أو 60
     denoise: true,
     engine: 'hybrid',  // 'ai' | 'hybrid' | 'spectral'
@@ -685,9 +859,21 @@
     const before = levelStats(input, sr);
     let x = o.inPlace ? input : Float32Array.from(input);
 
+    report(0.01, 'analyze');
+    const pitch = estimatePitch(x, sr);
+    let hpFreq = o.highpassFreq;
+    if (hpFreq === 'auto') hpFreq = pitch ? clamp(Math.round(pitch.p10 * 0.75), 40, 80) : 80;
+
     report(0.02, 'highpass');
-    if (o.highpass) highpass(x, sr, o.highpassFreq);
+    if (o.highpass) highpass(x, sr, hpFreq);
     if (o.hum === 50 || o.hum === 60) removeHum(x, sr, o.hum);
+
+    let tone = null;
+    if (o.tone > 0) {
+      report(0.03, 'tone');
+      tone = toneCorrection(x, sr, o.tone);
+      if (tone && tone.points.some((pt) => Math.abs(pt[1]) > 0.5)) x = applyEqCurve(x, sr, tone.points, true);
+    }
 
     let engineUsed = 'none';
     if (o.denoise) {
@@ -695,14 +881,15 @@
       if ((engine === 'ai' || engine === 'hybrid') && !o.rnnoise) engine = 'spectral'; // النموذج غير متاح
       if (engine === 'ai' || engine === 'hybrid') {
         const span = engine === 'hybrid' ? 0.6 : 0.8;
-        x = rnnoiseDenoise(x, sr, o.rnnoise, o, (p) => report(0.05 + p * span, 'ai')).samples;
+        const own = Object.assign({}, o, { inPlace: true }); // x مملوكة لهذه الدالة
+        x = rnnoiseDenoise(x, sr, o.rnnoise, own, (p) => report(0.05 + p * span, 'ai')).samples;
         if (engine === 'hybrid') {
           // تمريرة طيفية خفيفة لإزالة بقايا الضوضاء الثابتة بعد النموذج
-          const so = Object.assign({}, o, { strength: o.strength * 0.5, noiseProfile: 'auto' });
+          const so = Object.assign({}, o, { strength: o.strength * 0.5, noiseProfile: 'auto', inPlace: true });
           x = spectralDenoise(x, sr, so, (p) => report(0.65 + p * 0.2, 'denoise'));
         }
       } else {
-        x = spectralDenoise(x, sr, o, (p) => report(0.05 + p * 0.8, 'denoise'));
+        x = spectralDenoise(x, sr, Object.assign({}, o, { inPlace: true }), (p) => report(0.05 + p * 0.8, 'denoise'));
       }
       engineUsed = engine;
     }
@@ -719,7 +906,11 @@
     const after = levelStats(x, sr);
     after.lufs = measureLoudness(x, sr);
     report(1, 'done');
-    return { samples: x, stats: { before, after, engine: engineUsed } };
+    const toneMax = tone ? Math.max(...tone.points.map((pt) => pt[1])) : 0;
+    return {
+      samples: x,
+      stats: { before, after, engine: engineUsed, pitch: pitch && pitch.median, highpassHz: o.highpass ? hpFreq : null, toneMaxDb: toneMax },
+    };
   }
 
   const AudioDSP = {
@@ -727,6 +918,11 @@
     FFT,
     toMono,
     smartMono,
+    TONE_BANDS,
+    speechLTAS,
+    estimatePitch,
+    toneCorrection,
+    applyEqCurve,
     levelStats,
     measureLoudness,
     kWeightingCoeffs,

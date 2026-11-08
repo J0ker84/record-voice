@@ -81,11 +81,21 @@
       <div class="field">
         <div class="field-head">
           <label for="strength">شدة إزالة الضوضاء</label>
-          <output id="strengthOut">60%</output>
+          <output id="strengthOut">40%</output>
         </div>
-        <input id="strength" type="range" min="0" max="100" value="60">
+        <input id="strength" type="range" min="0" max="100" value="40">
         <div class="range-labels"><span>خفيفة (طبيعية)</span><span>قوية</span></div>
-        <p class="hint">🎤 إذا كان كاتم الضوضاء في الميكروفون اللاسلكي مفعّلاً، فابدأ بشدة خفيفة (30–40%) حتى لا يصبح الصوت معدنياً.</p>
+        <p class="hint">🎤 مع ميكروفون Earldom تكون الضوضاء منخفضة أصلاً، فتكفي 30–40%. ارفعها لتسجيلات ميكروفون الهاتف.</p>
+      </div>
+
+      <div class="field">
+        <label for="tone">تصحيح النبرة</label>
+        <select id="tone">
+          <option value="1">تلقائي — يعيد وضوح الحروف (موصى به)</option>
+          <option value="0.5">خفيف — نصف التصحيح</option>
+          <option value="0">معطّل</option>
+        </select>
+        <p class="hint">يقيس ترددات صوتك في التسجيل ويقرّبها من نبرتك الطبيعية. يعالج كتمة الميكروفون اللاسلكي، ولا يغيّر شيئاً تقريباً إذا كانت النبرة سليمة.</p>
       </div>
 
       <div class="field">
@@ -121,7 +131,7 @@
         </div>
 
         <div class="checks">
-          <label class="check"><input id="optHighpass" type="checkbox" checked><span>إزالة الهمهمة والاهتزازات المنخفضة</span></label>
+          <label class="check"><input id="optHighpass" type="checkbox" checked><span>إزالة الاهتزازات المنخفضة (تلقائياً تحت درجة صوتك)</span></label>
           <label class="check"><input id="optGate" type="checkbox" checked><span>كتم الضوضاء في فترات الصمت</span></label>
           <label class="check"><input id="optEq" type="checkbox" checked><span>تحسين وضوح الصوت</span></label>
           <label class="check"><input id="optCompress" type="checkbox" checked><span>صوت متوازن (ضاغط خفيف)</span></label>

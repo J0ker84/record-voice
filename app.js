@@ -9,7 +9,7 @@
     browserNs: $('#browserNs'), strength: $('#strength'), strengthOut: $('#strengthOut'),
     noiseProfile: $('#noiseProfile'), hum: $('#hum'), optHighpass: $('#optHighpass'),
     optGate: $('#optGate'), optEq: $('#optEq'), optCompress: $('#optCompress'),
-    loudness: $('#loudness'), processBtn: $('#processBtn'), shareProc: $('#shareProc'),
+    loudness: $('#loudness'), tone: $('#tone'), processBtn: $('#processBtn'), shareProc: $('#shareProc'),
     fileStatus: $('#fileStatus'), resetSettings: $('#resetSettings'),
     progressWrap: $('#progressWrap'), stageText: $('#stageText'), progressFill: $('#progressFill'), progressText: $('#progressText'),
     origCanvas: $('#origCanvas'), procCanvas: $('#procCanvas'), origAudio: $('#origAudio'),
@@ -347,7 +347,7 @@
 
   // حفظ الإعدادات المفضلة على هذا الجهاز
   const SETTINGS_KEY = 'sawt-naqi-settings-v1';
-  const settingControls = ['strength', 'noiseProfile', 'hum', 'loudness', 'optHighpass', 'optGate', 'optEq', 'optCompress'];
+  const settingControls = ['strength', 'tone', 'noiseProfile', 'hum', 'loudness', 'optHighpass', 'optGate', 'optEq', 'optCompress'];
   const defaultSettings = {};
   function snapshotSettings() {
     const o = { engine: selectedEngine() };
@@ -377,6 +377,8 @@
   };
   const STAGE_NAMES = {
     'load-model': 'تحميل نموذج الذكاء الاصطناعي…',
+    analyze: 'تحليل صوتك…',
+    tone: 'تصحيح النبرة…',
     highpass: 'إزالة الهمهمة…',
     ai: 'الشبكة العصبية تعزل الكلام عن الضوضاء…',
     denoise: 'التنقية الطيفية…',
@@ -412,6 +414,7 @@
       denoise: s > 0,
       strength: s,
       engine: selectedEngine(),
+      tone: Number(els.tone.value),
       noiseProfile: els.noiseProfile.value,
       noiseSeconds: 1,
       hum: Number(els.hum.value),
@@ -529,6 +532,9 @@
       ['الضوضاء في فترات الصمت (قبل)', fmt(b.snrDb), '', 'أخفض من صوتك بهذا المقدار'],
       ['الضوضاء في فترات الصمت (بعد)', fmt(a.snrDb), 'good', 'أخفض من صوتك بهذا المقدار'],
       ['مستوى الصوت النهائي', Number.isFinite(a.lufs) ? a.lufs.toFixed(1) + ' LUFS' : '—', '', ''],
+      ['تصحيح النبرة', st.toneMaxDb > 0.5 ? '+' + st.toneMaxDb.toFixed(0) + ' dB' : 'لم يلزم', st.toneMaxDb > 0.5 ? 'good' : '',
+        st.toneMaxDb > 0.5 ? 'أقصى تعزيز للترددات العالية' : 'النبرة سليمة'],
+      ['درجة صوتك', st.pitch ? Math.round(st.pitch) + ' Hz' : '—', '', st.highpassHz ? `الفلتر المنخفض عند ${st.highpassHz} Hz` : ''],
       ['الطريقة المستخدمة', ENGINE_NAMES[st.engine] || '—', 'method', ''],
     ];
     els.stats.innerHTML = items.map(([label, value, cls, note]) =>

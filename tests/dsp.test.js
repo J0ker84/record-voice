@@ -101,7 +101,7 @@ test('إزالة الضوضاء تخفض الضوضاء بوضوح وتحسن SN
   const noisy = addNoise(clean, -32, -30, 7);
 
   const out = DSP.processVoice(noisy, SR, {
-    hum: 50, eq: false, compress: false, normalize: false, gate: true, strength: 0.7,
+    hum: 50, eq: false, compress: false, normalize: false, gate: true, strength: 0.7, tone: 0, highpassFreq: 80,
   }).samples;
 
   // المرجع يمر بنفس الفلاتر الخطية (تمرير عالٍ + Notch) حتى تكون المقارنة عادلة من ناحية الطور
@@ -204,7 +204,7 @@ test('RNNoise يتفوق على الطريقة الطيفية مع الضوضا�
   const k = Math.sqrt(ec / en) / DSP.dbToGain(5); // SNR = 5 dB
   const noisy = clean.map((v, i) => v + nz[i] * k);
 
-  const base = { highpass: false, gate: false, eq: false, normalize: false, strength: 0.6, rnnoise: mod };
+  const base = { highpass: false, gate: false, eq: false, normalize: false, tone: 0, strength: 0.6, rnnoise: mod };
   const spectral = DSP.processVoice(noisy, SR, Object.assign({}, base, { engine: 'spectral' }));
   const ai = DSP.processVoice(noisy, SR, Object.assign({}, base, { engine: 'ai' }));
   const hybrid = DSP.processVoice(noisy, SR, Object.assign({}, base, { engine: 'hybrid' }));
@@ -292,4 +292,61 @@ test('المعالجة في المكان (لتوفير الذاكرة) تعطي 
   const b = DSP.processVoice(Float32Array.from(noisy), SR, Object.assign({}, opts, { inPlace: true })).samples;
   assert.strictEqual(a.length, b.length);
   for (let i = 0; i < a.length; i++) assert.ok(Math.abs(a[i] - b[i]) < 1e-6, 'اختلاف عند ' + i);
+});
+
+// ------------------------------------------------------------------
+// تصحيح النبرة، درجة الصوت، والفلتر المتكيّف
+// ------------------------------------------------------------------
+/** "كلام" بطيف عريض: دفعات من ضوضاء وردية بغلاف مقاطع (يغطي كل الترددات). */
+function broadbandSpeechLike(seconds, seed) {
+  const r = rng(seed), n = Math.round(SR * seconds), x = new Float32Array(n);
+  let b0 = 0, b1 = 0, b2 = 0;
+  for (let i = 0; i < n; i++) {
+    const w = gauss(r);
+    b0 = 0.99765 * b0 + w * 0.099046; b1 = 0.963 * b1 + w * 0.2965164; b2 = 0.57 * b2 + w * 1.0526913;
+    const t = i / SR, env = t % 0.7 < 0.45 ? Math.sin((Math.PI * (t % 0.7)) / 0.45) : 0;
+    x[i] = 0.05 * env * (b0 + b1 + b2 + w * 0.1848);
+  }
+  return x;
+}
+
+test('مرشح المنحنى بقيم صفرية لا يغيّر الإشارة، والمعالجة في المكان مطابقة', () => {
+  const x = broadbandSpeechLike(3, 2);
+  const flat = DSP.applyEqCurve(x, SR, [[1000, 0], [8000, 0]]);
+  assert.ok(snr(x, flat) > 60, 'snr=' + snr(x, flat));
+  const pts = [[1000, 0], [3000, 6], [8000, 10]];
+  const a = DSP.applyEqCurve(x, SR, pts);
+  const b = DSP.applyEqCurve(Float32Array.from(x), SR, pts, true);
+  for (let i = 0; i < a.length; i++) assert.ok(Math.abs(a[i] - b[i]) < 1e-6);
+});
+
+test('تصحيح النبرة يعوّض صوتاً مكتوماً (نقص الترددات العالية)', () => {
+  // نبدأ بإشارة قريبة من النبرة المرجعية (3 تمريرات تصحيح) حتى لا نصطدم بحدود المنحنى
+  let x = broadbandSpeechLike(8, 3);
+  for (let k = 0; k < 3; k++) x = DSP.applyEqCurve(x, SR, DSP.toneCorrection(x, SR, 1).points);
+  const muffled = Float32Array.from(x);
+  DSP.applyBiquad(muffled, DSP.biquadCoeffs('highshelf', 2500, SR, 0.7071, -8)); // كتم بمقدار 8dB
+  const c0 = DSP.toneCorrection(x, SR, 1), c1 = DSP.toneCorrection(muffled, SR, 1);
+  const at = (c, f) => c.points.find((p) => p[0] === f)[1];
+  for (const f of [5000, 6300, 8000]) {
+    const extra = at(c1, f) - at(c0, f);
+    // المنحنى محدود بـ +12dB، لذا نقارن حيث لا يصل للحد
+    if (at(c1, f) < 11.9) assert.ok(Math.abs(extra - 8) < 2.5, `at ${f}Hz extra boost ${extra.toFixed(1)} (expected ≈ 8)`);
+  }
+  assert.ok(at(c1, 500) === 0 && at(c1, 630) === 0, 'لا يجب تغيير ما تحت 800Hz');
+  // الشدة صفر = بلا تغيير
+  assert.ok(DSP.toneCorrection(muffled, SR, 0).points.every((p) => p[1] === 0));
+});
+
+test('تقدير درجة الصوت والفلتر المنخفض المتكيّف', () => {
+  const { x } = makeSpeech(6); // درجة الصوت ~140Hz ±30
+  const p = DSP.estimatePitch(x, SR);
+  assert.ok(p && p.median > 115 && p.median < 165, 'median=' + (p && p.median));
+  const res = DSP.processVoice(x, SR, { denoise: false });
+  assert.ok(res.stats.highpassHz >= 40 && res.stats.highpassHz <= 80);
+  assert.ok(res.stats.highpassHz < p.p10, 'الفلتر يجب أن يكون تحت درجة الصوت');
+  // صوت عميق جداً (80Hz) → فلتر أخفض من 80
+  const deep = new Float32Array(SR * 4).map((_, i) => { const t = i / SR; let v = 0; for (let h = 1; h < 15; h++) v += Math.sin(2 * Math.PI * 80 * h * t) / h; return (t % 1 < 0.6 ? 0.1 : 0) * v; });
+  const rd = DSP.processVoice(deep, SR, { denoise: false });
+  assert.ok(rd.stats.highpassHz < 70, 'hp=' + rd.stats.highpassHz);
 });

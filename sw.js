@@ -1,5 +1,5 @@
 /* Service Worker: العمل بدون إنترنت + استقبال الملفات المُشارَكة من تطبيقات أندرويد */
-const CACHE = 'sawt-naqi-v3';
+const CACHE = 'sawt-naqi-v4';
 const SHARED = 'sawt-naqi-shared';
 const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'dsp.js', 'dsp-worker.js', 'manifest.json',
   'icon.svg', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png',
