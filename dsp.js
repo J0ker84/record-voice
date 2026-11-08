@@ -216,8 +216,13 @@
     return x;
   }
 
-  function voiceEQ(x, sr) {
+  /**
+   * @param {boolean} [presence=true] تعزيز الوضوح العالي؛ يُعطَّل عندما يتولى
+   *   تصحيح النبرة التلقائي ضبط الترددات العالية، حتى لا يتضاعف التعزيز.
+   */
+  function voiceEQ(x, sr, presence) {
     applyBiquad(x, biquadCoeffs('peaking', 250, sr, 1.0, -2.5));  // تقليل "الطين"
+    if (presence === false) return x;
     applyBiquad(x, biquadCoeffs('peaking', 3200, sr, 0.9, 3));    // وضوح ونطق الحروف
     if (sr > 24000) applyBiquad(x, biquadCoeffs('highshelf', 10000, sr, 0.7071, 1.5)); // "هواء"
     return x;
@@ -868,11 +873,11 @@
     if (o.highpass) highpass(x, sr, hpFreq);
     if (o.hum === 50 || o.hum === 60) removeHum(x, sr, o.hum);
 
-    let tone = null;
+    let tone = null, toneApplied = false;
     if (o.tone > 0) {
       report(0.03, 'tone');
       tone = toneCorrection(x, sr, o.tone);
-      if (tone && tone.points.some((pt) => Math.abs(pt[1]) > 0.5)) x = applyEqCurve(x, sr, tone.points, true);
+      if (tone && tone.points.some((pt) => Math.abs(pt[1]) > 0.5)) { x = applyEqCurve(x, sr, tone.points, true); toneApplied = true; }
     }
 
     let engineUsed = 'none';
@@ -896,7 +901,7 @@
     report(0.87, 'gate');
     if (o.gate) noiseGate(x, sr);
     report(0.91, 'eq');
-    if (o.eq) voiceEQ(x, sr);
+    if (o.eq) voiceEQ(x, sr, !toneApplied);
     report(0.95, 'compress');
     if (o.compress) compressor(x, sr);
     report(0.97, 'level');
