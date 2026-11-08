@@ -422,3 +422,18 @@ test('تخفيف الصدى: الشدة صفر لا تغيّر شيئاً، وا
   const b = DSP.dereverb(Float32Array.from(x), SR, { strength: 0.5, inPlace: true });
   for (let i = 0; i < a.length; i++) assert.ok(Math.abs(a[i] - b[i]) < 1e-6);
 });
+
+// ------------------------------------------------------------------
+// كشف الطنين الكهربائي تلقائياً
+// ------------------------------------------------------------------
+test('كشف الطنين: 50Hz و60Hz يُكتشفان، والكلام النظيف لا يُطلق إنذاراً كاذباً', () => {
+  const { x } = makeSpeech(8);
+  const withHum = (f) => { const r = rng(f); return x.map((v, i) => v + 0.004 * Math.sin((2 * Math.PI * f * i) / SR) + 0.0015 * Math.sin((2 * Math.PI * 2 * f * i) / SR) + 0.0003 * gauss(r)); };
+  assert.strictEqual((DSP.detectHum(withHum(50), SR) || {}).freq, 50);
+  assert.strictEqual((DSP.detectHum(withHum(60), SR) || {}).freq, 60);
+  const r = rng(3);
+  assert.strictEqual(DSP.detectHum(x.map((v) => v + 0.0003 * gauss(r)), SR), null);
+  // في السلسلة الكاملة (الافتراضي = تلقائي)
+  assert.strictEqual(DSP.processVoice(withHum(50), SR, { denoise: false }).stats.humHz, 50);
+  assert.strictEqual(DSP.processVoice(withHum(50), SR, { denoise: false, hum: 0 }).stats.humHz, null);
+});

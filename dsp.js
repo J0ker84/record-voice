@@ -220,6 +220,54 @@
    * @param {boolean} [presence=true] تعزيز الوضوح العالي؛ يُعطَّل عندما يتولى
    *   تصحيح النبرة التلقائي ضبط الترددات العالية، حتى لا يتضاعف التعزيز.
    */
+  /**
+   * كشف الطنين الكهربائي (50 أو 60Hz): يُحلَّل طيف أهدأ المقاطع (حيث لا كلام)
+   * بدقة ~3Hz، ويُبحث عن قمة حادة عند التردد الأساسي وتوافقيه الثاني والثالث.
+   * @returns {{freq: 50|60, prominenceDb: number}|null}
+   */
+  function detectHum(x, sr) {
+    const N = 16384;
+    if (x.length < N * 2) return null;
+    const blocks = [];
+    for (let off = 0; off + N <= x.length; off += N / 2) {
+      let e = 0;
+      for (let i = off; i < off + N; i += 8) e += x[i] * x[i];
+      blocks.push([off, e]);
+    }
+    blocks.sort((a, b) => a[1] - b[1]);
+    let chosen = blocks.slice(0, Math.max(2, Math.ceil(blocks.length * 0.3)));
+    if (chosen.length > 40) chosen = chosen.slice(0, 40);
+    const fft = getFFT(N);
+    const re = new Float64Array(N), im = new Float64Array(N), P = new Float64Array(N / 2 + 1);
+    const win = new Float64Array(N);
+    for (let i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / N);
+    for (const [off] of chosen) {
+      for (let i = 0; i < N; i++) { re[i] = x[off + i] * win[i]; im[i] = 0; }
+      fft.transform(re, im, false);
+      for (let k = 0; k <= N / 2; k++) P[k] += re[k] * re[k] + im[k] * im[k];
+    }
+    const dB = (k) => 10 * Math.log10(P[k] + 1e-30);
+    // بروز القمة: أعلى قيمة ضمن ±1.5Hz مقابل وسيط الجوار (5–25Hz بعيداً)
+    const prominence = (f) => {
+      const c = Math.round((f * N) / sr), w = Math.max(1, Math.round((1.5 * N) / sr));
+      let pk = -Infinity;
+      for (let k = c - w; k <= c + w; k++) pk = Math.max(pk, dB(k));
+      const nb = [];
+      const lo = Math.round((5 * N) / sr), hi = Math.round((25 * N) / sr);
+      for (let d = lo; d <= hi; d++) { nb.push(dB(c - d), dB(c + d)); }
+      nb.sort((a, b) => a - b);
+      return pk - nb[nb.length >> 1];
+    };
+    let best = null;
+    for (const f of [50, 60]) {
+      const p1 = prominence(f), p2 = prominence(2 * f), p3 = prominence(3 * f);
+      // قمة قوية جداً عند الأساسي، أو قمة واضحة مع توافقي واحد على الأقل
+      const ok = p1 > 15 || (p1 > 8 && Math.max(p2, p3) > 6);
+      if (ok && (!best || p1 > best.prominenceDb)) best = { freq: f, prominenceDb: p1 };
+    }
+    return best;
+  }
+
   function voiceEQ(x, sr, presence) {
     applyBiquad(x, biquadCoeffs('peaking', 250, sr, 1.0, -2.5));  // تقليل "الطين"
     if (presence === false) return x;
@@ -953,7 +1001,7 @@
     highpassFreq: 'auto',  // 'auto' = تحت درجة صوت المتحدث (40–80Hz)، أو رقم بالهرتز
     tone: 1,               // تصحيح النبرة التلقائي: 0 = معطّل، 1 = كامل
     dereverb: 0.5,         // تخفيف صدى الغرفة: 0 = معطّل، 0.5 = متوسط، 1 = قوي
-    hum: 0,            // 0 = معطّل، 50 أو 60
+    hum: 'auto',       // 'auto' = كشف تلقائي، 0 = معطّل، 50 أو 60
     denoise: true,
     engine: 'hybrid',  // 'ai' | 'hybrid' | 'spectral'
     rnnoise: null,     // وحدة RNNoise المحمّلة (مطلوبة لـ ai و hybrid)
@@ -981,7 +1029,9 @@
 
     report(0.02, 'highpass');
     if (o.highpass) highpass(x, sr, hpFreq);
-    if (o.hum === 50 || o.hum === 60) removeHum(x, sr, o.hum);
+    let humHz = o.hum === 50 || o.hum === 60 ? o.hum : null;
+    if (o.hum === 'auto') { const h = detectHum(x, sr); humHz = h ? h.freq : null; }
+    if (humHz) removeHum(x, sr, humHz);
 
     if (o.dereverb > 0) {
       report(0.025, 'dereverb');
@@ -1039,7 +1089,7 @@
     const toneMax = tone ? Math.max(...tone.points.map((pt) => pt[1])) : 0;
     return {
       samples: x,
-      stats: { before, after, engine: engineUsed, gate: gateMode, pitch: pitch && pitch.median, highpassHz: o.highpass ? hpFreq : null, toneMaxDb: toneMax },
+      stats: { before, after, engine: engineUsed, gate: gateMode, humHz, pitch: pitch && pitch.median, highpassHz: o.highpass ? hpFreq : null, toneMaxDb: toneMax },
     };
   }
 
@@ -1062,6 +1112,7 @@
     applyBiquad,
     highpass,
     removeHum,
+    detectHum,
     voiceEQ,
     spectralDenoise,
     resample,

@@ -419,7 +419,7 @@
       dereverb: Number(els.dereverb.value),
       noiseProfile: els.noiseProfile.value,
       noiseSeconds: 1,
-      hum: Number(els.hum.value),
+      hum: els.hum.value === 'auto' ? 'auto' : Number(els.hum.value),
       highpass: els.optHighpass.checked,
       gate: els.optGate.checked,
       eq: els.optEq.checked,
@@ -537,6 +537,7 @@
       ['تصحيح النبرة', st.toneMaxDb > 0.5 ? '+' + st.toneMaxDb.toFixed(0) + ' dB' : 'لم يلزم', st.toneMaxDb > 0.5 ? 'good' : '',
         st.toneMaxDb > 0.5 ? 'أقصى تعزيز للترددات العالية' : 'النبرة سليمة'],
       ['درجة صوتك', st.pitch ? Math.round(st.pitch) + ' Hz' : '—', '', st.highpassHz ? `الفلتر المنخفض عند ${st.highpassHz} Hz` : ''],
+      ['الطنين الكهربائي', st.humHz ? `أُزيل (${st.humHz} Hz)` : 'لا يوجد', st.humHz ? 'good' : '', st.humHz ? 'مع توافقياته' : ''],
       ['الطريقة المستخدمة', ENGINE_NAMES[st.engine] || '—', 'method', ''],
     ];
     els.stats.innerHTML = items.map(([label, value, cls, note]) =>
