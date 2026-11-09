@@ -11,6 +11,8 @@
     optGate: $('#optGate'), optEq: $('#optEq'), optCompress: $('#optCompress'),
     loudness: $('#loudness'), tone: $('#tone'), dereverb: $('#dereverb'), processBtn: $('#processBtn'), shareProc: $('#shareProc'),
     fileStatus: $('#fileStatus'), resetSettings: $('#resetSettings'),
+    micSelect: $('#micSelect'), micRefresh: $('#micRefresh'), micHint: $('#micHint'), micField: $('#micField'),
+    recordDetails: $('#recordDetails'),
     progressWrap: $('#progressWrap'), stageText: $('#stageText'), progressFill: $('#progressFill'), progressText: $('#progressText'),
     origCanvas: $('#origCanvas'), procCanvas: $('#procCanvas'), origAudio: $('#origAudio'),
     procAudio: $('#procAudio'), origMeta: $('#origMeta'), procMeta: $('#procMeta'),
@@ -161,6 +163,74 @@
     return types.find((t) => MediaRecorder.isTypeSupported(t)) || '';
   }
 
+  // ------------------------------------------------------------------
+  // اختيار الميكروفون (يُحفظ على هذا الجهاز)
+  // ------------------------------------------------------------------
+  const MIC_KEY = 'sawt-naqi-mic-v1';
+  function loadSavedMic() {
+    try { return JSON.parse(localStorage.getItem(MIC_KEY) || 'null'); } catch (e) { return null; }
+  }
+  function saveMic(id, label) {
+    try {
+      if (id) localStorage.setItem(MIC_KEY, JSON.stringify({ id, label }));
+      else localStorage.removeItem(MIC_KEY);
+    } catch (e) { /* وضع التصفح الخاص */ }
+  }
+
+  async function listInputs() {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    // "default" و"communications" في Chrome نسختان من ميكروفون آخر؛ خيار "الافتراضي" يغني عنهما
+    return devices.filter((d) => d.kind === 'audioinput' && d.deviceId !== 'default' && d.deviceId !== 'communications');
+  }
+
+  /** @param {boolean} askPermission يطلب الإذن مرة واحدة لإظهار أسماء الميكروفونات */
+  async function refreshMics(askPermission) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) { els.micField.hidden = true; return; }
+    let inputs = await listInputs();
+    let noLabels = inputs.length > 0 && inputs.every((d) => !d.label);
+    if ((noLabels || !inputs.length) && askPermission) {
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+        s.getTracks().forEach((t) => t.stop());
+        inputs = await listInputs();
+        noLabels = inputs.length > 0 && inputs.every((d) => !d.label);
+      } catch (e) {
+        toast('لم يُمنح إذن الميكروفون، فلا يمكن عرض أسماء الميكروفونات.', true);
+      }
+    }
+    const saved = loadSavedMic();
+    els.micSelect.innerHTML = '';
+    const def = new Option('الافتراضي (حسب إعدادات الجهاز)', '');
+    els.micSelect.add(def);
+    inputs.forEach((d, i) => els.micSelect.add(new Option(d.label || `ميكروفون ${i + 1}`, d.deviceId)));
+
+    let hint = '';
+    if (saved) {
+      // المعرّف قد يتغير بين الجلسات في بعض المتصفحات، فنبحث بالاسم أيضاً
+      const match = inputs.find((d) => d.deviceId === saved.id) || (saved.label && inputs.find((d) => d.label === saved.label));
+      if (match) {
+        els.micSelect.value = match.deviceId;
+        if (match.deviceId !== saved.id) saveMic(match.deviceId, match.label);
+      } else if (!noLabels) {
+        hint = `الميكروفون المحفوظ «${saved.label || 'السابق'}» غير موصول الآن، فسيُستخدم الافتراضي.`;
+      }
+    }
+    if (noLabels) hint = 'اضغط ↻ واسمح باستخدام الميكروفون لعرض أسماء الميكروفونات.';
+    else if (!inputs.length) hint = 'لا يوجد ميكروفون موصول.';
+    els.micHint.textContent = hint;
+  }
+
+  els.micSelect.addEventListener('change', () => {
+    const opt = els.micSelect.selectedOptions[0];
+    saveMic(els.micSelect.value, els.micSelect.value ? opt.textContent : '');
+    els.micHint.textContent = '';
+  });
+  els.micRefresh.addEventListener('click', () => refreshMics(true));
+  els.recordDetails.addEventListener('toggle', () => { if (els.recordDetails.open) refreshMics(false); });
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener('devicechange', () => { if (!rec.active) refreshMics(false); });
+  }
+
   async function startRecording() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
       toast('متصفحك لا يدعم التسجيل. جرّب Chrome أو Safari أو Firefox حديث.', true);
@@ -171,15 +241,22 @@
       return;
     }
     let stream;
+    const audio = {
+      echoCancellation: false,
+      noiseSuppression: els.browserNs.checked,
+      autoGainControl: false,
+      channelCount: 1,
+    };
+    const micId = els.micSelect.value;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: els.browserNs.checked,
-          autoGainControl: false,
-          channelCount: 1,
-        },
-      });
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: micId ? { ...audio, deviceId: { exact: micId } } : audio });
+      } catch (err) {
+        if (!micId || !err || (err.name !== 'OverconstrainedError' && err.name !== 'NotFoundError')) throw err;
+        // الميكروفون المختار فُصل: نسجّل بالافتراضي وننبّه
+        toast('الميكروفون المختار غير متاح، فسُجّل بالميكروفون الافتراضي.', true);
+        stream = await navigator.mediaDevices.getUserMedia({ audio });
+      }
     } catch (err) {
       const denied = err && (err.name === 'NotAllowedError' || err.name === 'SecurityError');
       toast(denied ? 'تم رفض إذن الميكروفون. اسمح بالوصول من إعدادات المتصفح.' : 'تعذّر الوصول إلى الميكروفون: ' + (err && err.message), true);
@@ -217,7 +294,10 @@
 
     els.recordBtn.classList.add('recording');
     els.recordBtn.setAttribute('aria-label', 'أوقف التسجيل');
-    els.recStatus.textContent = 'جارٍ التسجيل… اضغط مرة أخرى للإيقاف';
+    const track = stream.getAudioTracks()[0];
+    const micName = track && track.label ? track.label : '';
+    els.recStatus.textContent = micName ? `جارٍ التسجيل من: ${micName}` : 'جارٍ التسجيل… اضغط مرة أخرى للإيقاف';
+    refreshMics(false); // بعد منح الإذن تظهر أسماء الميكروفونات
     els.fileInput.disabled = true;
     els.processBtn.disabled = true;
   }

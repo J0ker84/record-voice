@@ -38,6 +38,14 @@
 
       <details class="more" id="recordDetails">
         <summary>🎙️ أو سجّل من هنا مباشرة</summary>
+        <div class="field mic-field" id="micField">
+          <label for="micSelect">الميكروفون</label>
+          <div class="mic-row">
+            <select id="micSelect"><option value="">الافتراضي (حسب إعدادات الجهاز)</option></select>
+            <button id="micRefresh" class="link-btn" type="button" title="تحديث قائمة الميكروفونات" aria-label="تحديث قائمة الميكروفونات">↻</button>
+          </div>
+          <p id="micHint" class="hint"></p>
+        </div>
         <div class="recorder">
           <button id="recordBtn" class="record-btn" type="button" aria-label="ابدأ التسجيل">
             <span class="record-dot"></span>

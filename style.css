@@ -187,6 +187,10 @@ details.more[open] > summary { margin-bottom: 12px; }
 #settingsCard details.more { margin: 0 0 16px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
 
 .hint { margin: 6px 0 0; font-size: .84rem; color: var(--muted); }
+.hint:empty { display: none; }
+.mic-row { display: flex; gap: 8px; align-items: stretch; }
+.mic-row select { flex: 1; min-width: 0; }
+.mic-row .link-btn { font-size: 1.1rem; padding: 6px 14px; }
 .text-btn { background: none; border: 0; color: var(--muted); font: inherit; font-size: .88rem; cursor: pointer; padding: 4px 0 10px; text-decoration: underline; }
 .actions { display: flex; gap: 6px; }
 button.link-btn { background: var(--card); font: inherit; font-size: .88rem; font-weight: 600; cursor: pointer; }
